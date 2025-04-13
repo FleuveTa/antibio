@@ -1,0 +1,209 @@
+
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Database Schema</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 20px;
+        }
+        .table {
+            border: 1px solid #ccc;
+            border-radius: 5px;
+            background-color: white;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
+            width: 300px;
+        }
+        .table-header {
+            background-color: #4CAF50;
+            color: white;
+            padding: 10px;
+            font-weight: bold;
+            border-top-left-radius: 5px;
+            border-top-right-radius: 5px;
+        }
+        .table-content {
+            padding: 10px;
+        }
+        .column {
+            padding: 5px;
+            border-bottom: 1px solid #eee;
+        }
+        .column:last-child {
+            border-bottom: none;
+        }
+        .primary-key {
+            font-weight: bold;
+            color: #FF5722;
+        }
+        .foreign-key {
+            color: #2196F3;
+            font-style: italic;
+        }
+        .not-null {
+            text-decoration: underline;
+        }
+        .relationship {
+            margin: 20px 0;
+            padding: 10px;
+            background-color: #e1f5fe;
+            border-radius: 5px;
+            border-left: 5px solid #2196F3;
+        }
+        h1 {
+            color: #333;
+            border-bottom: 2px solid #4CAF50;
+            padding-bottom: 10px;
+        }
+        .legend {
+            margin-top: 20px;
+            padding: 10px;
+            background-color: #f9f9f9;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+        }
+        .legend div {
+            margin: 5px 0;
+        }
+    </style>
+</head>
+<body>
+    <h1>Database Schema</h1>
+    <div class="container">
+
+        <div class="table">
+            <div class="table-header">experiments</div>
+            <div class="table-content">
+    
+                <div class="column" class="primary-key">
+                    id : INTEGER
+                     (PK)
+                    
+                    
+                </div>
+        
+                <div class="column" class="not-null">
+                    name : TEXT
+                    
+                     NOT NULL
+                    
+                </div>
+        
+                <div class="column" class="not-null">
+                    date : TEXT
+                    
+                     NOT NULL
+                    
+                </div>
+        
+                <div class="column">
+                    description : TEXT
+                    
+                    
+                    
+                </div>
+        
+                <div class="column" class="not-null">
+                    file_path : TEXT
+                    
+                     NOT NULL
+                    
+                </div>
+        
+                <div class="column">
+                    parameters : TEXT
+                    
+                    
+                    
+                </div>
+        
+                <div class="column">
+                    created_at : TEXT
+                    
+                    
+                     DEFAULT CURRENT_TIMESTAMP
+                </div>
+        
+                <div class="column">
+                    label_column : TEXT
+                    
+                    
+                    
+                </div>
+        
+                <div class="column">
+                    status : TEXT
+                    
+                    
+                     DEFAULT &#x27;active&#x27;
+                </div>
+        
+            </div>
+        </div>
+    
+        <div class="table">
+            <div class="table-header">preprocessing_steps</div>
+            <div class="table-content">
+    
+                <div class="column" class="primary-key">
+                    id : INTEGER
+                     (PK)
+                    
+                    
+                </div>
+        
+                <div class="column" class="foreign-key">
+                    experiment_id : INTEGER
+                    
+                    
+                    
+                </div>
+        
+                <div class="column" class="not-null">
+                    step_name : TEXT
+                    
+                     NOT NULL
+                    
+                </div>
+        
+                <div class="column">
+                    parameters : TEXT
+                    
+                    
+                    
+                </div>
+        
+                <div class="column">
+                    created_at : TEXT
+                    
+                    
+                     DEFAULT CURRENT_TIMESTAMP
+                </div>
+        
+            </div>
+        </div>
+    
+    </div>
+
+    <h2>Relationships</h2>
+
+    <div class="relationship">
+        preprocessing_steps.experiment_id -&gt; experiments.id
+    </div>
+        
+    <div class="legend">
+        <h3>Legend</h3>
+        <div class="primary-key">Primary Key</div>
+        <div class="foreign-key">Foreign Key</div>
+        <div class="not-null">NOT NULL constraint</div>
+    </div>
+</body>
+</html>

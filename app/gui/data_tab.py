@@ -11,6 +11,7 @@ from datetime import datetime
 
 from app.core.data_loader import load_data, preprocess_data
 from app.core.experiment_manager import ExperimentManager
+from app.gui.db_viewer import DatabaseViewer
 
 
 class DataImportTab(QWidget):
@@ -19,7 +20,16 @@ class DataImportTab(QWidget):
     def __init__(self, app_data):
         super().__init__()
         self.app_data = app_data
-        self.experiment_manager = ExperimentManager()
+
+        # Initialize experiment manager with proper path
+        try:
+            self.experiment_manager = ExperimentManager(base_dir="data")
+            print("Experiment manager initialized with base_dir='data'")
+        except Exception as e:
+            print(f"Error initializing experiment manager: {e}")
+            QMessageBox.critical(self, "Error", f"Error initializing experiment manager: {e}")
+            self.experiment_manager = None
+
         self.current_experiment_id = None
         self.is_voltammetry_format = False
         self.init_ui()
@@ -27,28 +37,58 @@ class DataImportTab(QWidget):
     def init_ui(self):
         layout = QVBoxLayout()
 
-        # Experiment Selection Section
-        exp_select_group = QGroupBox("Experiment Selection")
-        exp_select_layout = QHBoxLayout()
+        # Experiment Management Section
+        exp_select_group = QGroupBox("Experiment Management")
+        exp_select_layout = QVBoxLayout()
+
+        # Radio button layout
+        radio_layout = QHBoxLayout()
 
         self.new_exp_radio = QRadioButton("New Experiment")
         self.new_exp_radio.setChecked(True)
         self.new_exp_radio.toggled.connect(self.toggle_experiment_mode)
-        exp_select_layout.addWidget(self.new_exp_radio)
+        self.new_exp_radio.setStyleSheet("font-weight: bold;")
+        radio_layout.addWidget(self.new_exp_radio)
 
         self.load_exp_radio = QRadioButton("Load Existing Experiment")
         self.load_exp_radio.toggled.connect(self.toggle_experiment_mode)
-        exp_select_layout.addWidget(self.load_exp_radio)
+        self.load_exp_radio.setStyleSheet("font-weight: bold;")
+        radio_layout.addWidget(self.load_exp_radio)
+
+        exp_select_layout.addLayout(radio_layout)
+
+        # Experiment selection controls
+        exp_controls = QHBoxLayout()
 
         self.exp_combo = QComboBox()
         self.exp_combo.setEnabled(False)
         self.exp_combo.currentIndexChanged.connect(self.experiment_selected)
-        exp_select_layout.addWidget(self.exp_combo)
+        self.exp_combo.setMinimumWidth(250)  # Make the dropdown wider
+        exp_controls.addWidget(self.exp_combo, 3)  # Give it more space
 
-        self.refresh_btn = QPushButton("Refresh")
+        self.refresh_btn = QPushButton("🔄")
+        self.refresh_btn.setToolTip("Refresh experiment list")
         self.refresh_btn.setEnabled(False)
         self.refresh_btn.clicked.connect(self.load_experiments)
-        exp_select_layout.addWidget(self.refresh_btn)
+        self.refresh_btn.setMaximumWidth(30)  # Make it compact
+        exp_controls.addWidget(self.refresh_btn, 1)
+
+        self.delete_btn = QPushButton("🗑️")
+        self.delete_btn.setToolTip("Delete selected experiment")
+        self.delete_btn.setEnabled(False)
+        self.delete_btn.clicked.connect(self.delete_experiment)
+        self.delete_btn.setMaximumWidth(30)  # Make it compact
+        self.delete_btn.setStyleSheet("background-color: #ffcccc;")
+        exp_controls.addWidget(self.delete_btn, 1)
+
+        self.db_view_btn = QPushButton("📂")
+        self.db_view_btn.setToolTip("View database structure")
+        self.db_view_btn.clicked.connect(self.view_database)
+        self.db_view_btn.setMaximumWidth(30)  # Make it compact
+        self.db_view_btn.setStyleSheet("background-color: #e6f2ff;")
+        exp_controls.addWidget(self.db_view_btn, 1)
+
+        exp_select_layout.addLayout(exp_controls)
 
         exp_select_group.setLayout(exp_select_layout)
         layout.addWidget(exp_select_group)
@@ -58,15 +98,34 @@ class DataImportTab(QWidget):
         exp_layout = QGridLayout()
 
         # Experiment name
-        exp_layout.addWidget(QLabel("Experiment Name:"), 0, 0)
+        name_label = QLabel("Experiment Name:")
+        name_label.setStyleSheet("font-weight: bold;")
+        exp_layout.addWidget(name_label, 0, 0)
+
         self.exp_name = QLineEdit()
+        self.exp_name.setPlaceholderText("Enter a descriptive name for your experiment")
         exp_layout.addWidget(self.exp_name, 0, 1)
 
         # Experiment description
-        exp_layout.addWidget(QLabel("Description:"), 1, 0)
+        desc_label = QLabel("Description:")
+        desc_label.setStyleSheet("font-weight: bold;")
+        exp_layout.addWidget(desc_label, 1, 0)
+
         self.exp_desc = QTextEdit()
+        self.exp_desc.setPlaceholderText("Enter details about the experiment (optional)")
         self.exp_desc.setMaximumHeight(60)
         exp_layout.addWidget(self.exp_desc, 1, 1)
+
+        # Experiment date (read-only, shown when loading existing experiments)
+        date_label = QLabel("Created:")
+        date_label.setStyleSheet("font-weight: bold;")
+        exp_layout.addWidget(date_label, 2, 0)
+
+        self.exp_date = QLineEdit()
+        self.exp_date.setReadOnly(True)
+        self.exp_date.setStyleSheet("background-color: #f0f0f0;")
+        self.exp_date.setVisible(False)  # Initially hidden
+        exp_layout.addWidget(self.exp_date, 2, 1)
 
         self.exp_group.setLayout(exp_layout)
         layout.addWidget(self.exp_group)
@@ -192,20 +251,15 @@ class DataImportTab(QWidget):
     def load_columns(self, file_path):
         """Load column names from the selected file and populate the label column dropdown"""
         try:
-            # Get skip rows from input
-            skip_rows = self.parse_skip_rows(self.skip_rows_input.text())
-            if skip_rows:
-                print(f"Skipping rows: {skip_rows}")
-
             # Determine file type and load accordingly
             if file_path.endswith('.csv'):
                 # Try with different delimiters
                 try:
-                    df = pd.read_csv(file_path, skiprows=skip_rows if skip_rows else None)
+                    df = pd.read_csv(file_path)
                 except:
-                    df = pd.read_csv(file_path, sep=';', skiprows=skip_rows if skip_rows else None)
+                    df = pd.read_csv(file_path, sep=';')
             elif file_path.endswith(('.xlsx', '.xls')):
-                df = pd.read_excel(file_path, skiprows=skip_rows if skip_rows else None)
+                df = pd.read_excel(file_path)
             else:
                 raise ValueError("Unsupported file format")
 
@@ -285,44 +339,85 @@ class DataImportTab(QWidget):
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Error loading columns: {str(e)}")
 
+    # Skip rows functionality has been removed
+
     def toggle_experiment_mode(self, checked):
         """Toggle between new experiment and load experiment modes"""
         if self.new_exp_radio.isChecked():
             # New experiment mode
-            self.exp_group.setEnabled(True)
+            # Enable experiment creation fields
+            self.exp_name.setEnabled(True)
+            self.exp_name.clear()
+            self.exp_desc.setEnabled(True)
+            self.exp_desc.clear()
+            self.exp_date.setVisible(False)
+
+            # Update UI state
             self.exp_combo.setEnabled(False)
             self.refresh_btn.setEnabled(False)
+            self.delete_btn.setEnabled(False)
             self.browse_btn.setEnabled(True)
             self.label_column.setEnabled(True)
-            self.import_btn.setText("Import Data")
+            self.import_btn.setText("Create & Import Data")
+            self.import_btn.setStyleSheet("background-color: #d4f7d4; font-weight: bold; padding: 5px;")
+
+            # Update group box titles
+            self.exp_group.setTitle("New Experiment Information")
         else:
             # Load experiment mode
-            self.exp_group.setEnabled(False)
+            # Disable experiment creation fields
+            self.exp_name.setEnabled(False)
+            self.exp_desc.setEnabled(False)
+            self.exp_date.setVisible(True)
+
+            # Update UI state
             self.exp_combo.setEnabled(True)
             self.refresh_btn.setEnabled(True)
+            self.delete_btn.setEnabled(True)
             self.browse_btn.setEnabled(False)
             self.label_column.setEnabled(False)
-            self.import_btn.setText("Load Experiment")
+            self.import_btn.setText("Load Selected Experiment")
+            self.import_btn.setStyleSheet("background-color: #d4e6f7; font-weight: bold; padding: 5px;")
+
+            # Update group box titles
+            self.exp_group.setTitle("Experiment Details")
+
+            # Load available experiments
             self.load_experiments()
 
     def load_experiments(self):
         """Load list of experiments from database"""
         try:
+            # Check if experiment manager is initialized
+            if self.experiment_manager is None:
+                print("Experiment manager is not initialized, creating a new one")
+                self.experiment_manager = ExperimentManager(base_dir="data")
+
             # Clear the combo box
             self.exp_combo.clear()
 
             # Get experiments from database
+            print("Fetching experiments from database...")
             experiments = self.experiment_manager.list_experiments()
+            print(f"Found {len(experiments)} experiments")
 
             # Add experiments to combo box
             for exp in experiments:
+                print(f"Adding experiment: {exp['name']} (ID: {exp['id']})")
                 self.exp_combo.addItem(f"{exp['name']} ({exp['date']})", exp['id'])
 
             if not experiments:
+                print("No experiments found in database")
                 self.exp_combo.addItem("No experiments found")
                 self.exp_combo.setEnabled(False)
+            else:
+                self.exp_combo.setEnabled(True)
+                self.delete_btn.setEnabled(True)
 
         except Exception as e:
+            print(f"Error loading experiments: {str(e)}")
+            import traceback
+            traceback.print_exc()
             QMessageBox.critical(self, "Error", f"Error loading experiments: {str(e)}")
 
     def experiment_selected(self, index):
@@ -344,12 +439,27 @@ class DataImportTab(QWidget):
                 self.exp_desc.setText(experiment.get('description', ''))
                 self.file_path.setText(experiment['file_path'])
 
+                # Format and display the creation date
+                if 'created_at' in experiment:
+                    self.exp_date.setText(experiment['created_at'])
+                    self.exp_date.setVisible(True)
+
+                # Get preprocessing steps for this experiment
+                preprocessing_steps = self.experiment_manager.get_preprocessing_steps(experiment_id)
+                if preprocessing_steps:
+                    steps_text = ", ".join([step["name"] for step in preprocessing_steps])
+                    self.exp_desc.append(f"\n\nPreprocessing: {steps_text}")
+
                 # Store experiment ID
                 self.current_experiment_id = experiment_id
 
                 # Store the current experiment ID in app_data so it's accessible to other tabs
                 self.app_data["current_experiment_id"] = self.current_experiment_id
+                self.app_data["preprocessing_steps"] = preprocessing_steps
                 print(f"Stored current experiment ID in app_data: {self.current_experiment_id}")
+
+                # Enable the delete button
+                self.delete_btn.setEnabled(True)
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Error loading experiment details: {str(e)}")
 
@@ -380,54 +490,25 @@ class DataImportTab(QWidget):
             if selected_label == "None (No Labels)":
                 selected_label = None
 
-            # Get skip rows from input
-            skip_rows = self.parse_skip_rows(self.skip_rows_input.text())
-            if skip_rows:
-                print(f"Skipping rows: {skip_rows}")
+            # No skip rows functionality
 
             # First, load and transform the data
             if hasattr(self, 'temp_df') and self.is_voltammetry_format:
                 # For voltammetry format, we need to transform the data
                 print("Using voltammetry format data transformation")
-                # If we're using a previously loaded dataframe, make sure it was loaded with the correct skip rows
-                if skip_rows and not hasattr(self, 'used_skip_rows') or self.used_skip_rows != skip_rows:
-                    # Reload the data with the correct skip rows
-                    print("Reloading data with skip rows")
-                    if file_path.endswith('.csv'):
-                        try:
-                            self.temp_df = pd.read_csv(file_path, skiprows=skip_rows)
-                        except:
-                            self.temp_df = pd.read_csv(file_path, sep=';', skiprows=skip_rows)
-                    elif file_path.endswith(('.xlsx', '.xls')):
-                        self.temp_df = pd.read_excel(file_path, skiprows=skip_rows)
-                    self.used_skip_rows = skip_rows
-
                 df = self.transform_voltammetry_data(self.temp_df)
             elif hasattr(self, 'temp_df'):
                 # Use the already loaded dataframe for standard format
-                # Check if we need to reload with different skip rows
-                if skip_rows and not hasattr(self, 'used_skip_rows') or self.used_skip_rows != skip_rows:
-                    # Reload the data with the correct skip rows
-                    print("Reloading data with skip rows")
-                    if file_path.endswith('.csv'):
-                        try:
-                            self.temp_df = pd.read_csv(file_path, skiprows=skip_rows)
-                        except:
-                            self.temp_df = pd.read_csv(file_path, sep=';', skiprows=skip_rows)
-                    elif file_path.endswith(('.xlsx', '.xls')):
-                        self.temp_df = pd.read_excel(file_path, skiprows=skip_rows)
-                    self.used_skip_rows = skip_rows
-
                 df = self.temp_df.copy()
             else:
-                # Load the data file with skip rows
+                # Load the data file
                 if file_path.endswith('.csv'):
                     try:
-                        df = pd.read_csv(file_path, skiprows=skip_rows if skip_rows else None)
+                        df = pd.read_csv(file_path)
                     except:
-                        df = pd.read_csv(file_path, sep=';', skiprows=skip_rows if skip_rows else None)
+                        df = pd.read_csv(file_path, sep=';')
                 elif file_path.endswith(('.xlsx', '.xls')):
-                    df = pd.read_excel(file_path, skiprows=skip_rows if skip_rows else None)
+                    df = pd.read_excel(file_path)
                 else:
                     df = load_data(file_path)  # Fallback to the original loader
 
@@ -901,6 +982,76 @@ class DataImportTab(QWidget):
             if hasattr(self, 'highlight_point'):
                 self.highlight_point.remove()
             self.canvas.draw_idle()
+
+    def delete_experiment(self):
+        """Delete the currently selected experiment"""
+        if not hasattr(self, 'current_experiment_id') or self.current_experiment_id is None:
+            QMessageBox.warning(self, "Warning", "No experiment selected.")
+            return
+
+        # Get experiment details for confirmation
+        experiment = self.experiment_manager.get_experiment(self.current_experiment_id)
+        if not experiment:
+            QMessageBox.warning(self, "Warning", "Could not find experiment details.")
+            return
+
+        # Confirm deletion
+        confirm = QMessageBox.question(
+            self,
+            "Confirm Deletion",
+            f"Are you sure you want to delete the experiment '{experiment['name']}'?\n\n"
+            f"This will permanently delete all associated data, including:\n"
+            f"- Preprocessed data\n"
+            f"- Extracted features\n"
+            f"- Trained models\n\n"
+            f"This action cannot be undone.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+
+        if confirm == QMessageBox.Yes:
+            # Delete the experiment
+            success = self.experiment_manager.delete_experiment(self.current_experiment_id)
+
+            if success:
+                QMessageBox.information(
+                    self,
+                    "Success",
+                    f"Experiment '{experiment['name']}' has been deleted."
+                )
+
+                # Reset UI
+                self.current_experiment_id = None
+                self.app_data.pop("current_experiment_id", None)
+                self.app_data.pop("dataset", None)
+                self.app_data.pop("processed_data", None)
+                self.app_data.pop("preprocessing_steps", None)
+
+                # Clear fields
+                self.exp_name.clear()
+                self.exp_desc.clear()
+                self.file_path.clear()
+
+                # Reload experiments list
+                self.load_experiments()
+            else:
+                QMessageBox.critical(
+                    self,
+                    "Error",
+                    "Failed to delete experiment. See console for details."
+                )
+
+    def view_database(self):
+        """Open the database viewer"""
+        try:
+            # Get the database path from the experiment manager
+            db_path = self.experiment_manager.db_path
+
+            # Create and show the database viewer
+            self.db_viewer = DatabaseViewer(db_path)
+            self.db_viewer.show()
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Error opening database viewer: {str(e)}")
 
     def closeEvent(self, event):
         """Clean up when the widget is closed"""

@@ -1,392 +1,402 @@
-from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
+from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                              QPushButton, QComboBox, QTableWidget, QTableWidgetItem,
-                             QGroupBox, QGridLayout, QCheckBox, QSpinBox,
-                             QRadioButton, QButtonGroup, QSplitter)
+                             QGroupBox, QSplitter, QHeaderView, QMessageBox)
+from PyQt5.QtGui import QColor
 from PyQt5.QtCore import Qt, pyqtSignal
-import pandas as pd
-import numpy as np
-import matplotlib.pyplot as plt
-from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
-from matplotlib.figure import Figure
+from datetime import datetime
 
-from app.core.feature_eng import (extract_voltammetric_features, 
-                                 extract_time_series_features,
-                                 select_features)
+from app.core.feature_eng import (extract_voltammetric_features, extract_features_from_samples,
+                                 VOLTAMMETRIC_FEATURE_DESCRIPTIONS)
+from app.core.experiment_manager import ExperimentManager
 
 
 class FeatureEngineeringTab(QWidget):
     features_ready = pyqtSignal(bool)
-    
+
     def __init__(self, app_data):
         super().__init__()
         self.app_data = app_data
         self.init_ui()
-    
+
     def init_ui(self):
         layout = QVBoxLayout()
-        
+
         # Create splitter for resizable sections
         splitter = QSplitter(Qt.Vertical)
-        
+
         # Feature Extraction Section
-        extraction_group = QGroupBox("Feature Extraction")
+        extraction_group = QGroupBox("Electrochemical Feature Extraction")
         extraction_layout = QVBoxLayout()
-        
-        # Feature type selection
-        type_layout = QHBoxLayout()
-        type_layout.addWidget(QLabel("Feature Type:"))
-        self.feature_type_combo = QComboBox()
-        self.feature_type_combo.addItems([
-            "Electrochemical Features", 
-            "Statistical Features",
-            "Time Domain Features", 
-            "Frequency Domain Features",
-            "All Features"
+
+        # Introduction text
+        intro_label = QLabel(
+            "<p>Extract meaningful features from your voltammetric data to use in predictive models.</p>"
+            "<p>Features are organized into categories that are relevant for electrochemical analysis.</p>"
+        )
+        intro_label.setWordWrap(True)
+        intro_label.setStyleSheet("font-size: 11pt; margin-bottom: 10px;")
+        extraction_layout.addWidget(intro_label)
+
+        # Feature category selection
+        category_layout = QHBoxLayout()
+
+        # Category selection
+        category_layout.addWidget(QLabel("Feature Categories:"))
+        self.category_combo = QComboBox()
+        self.category_combo.addItems([
+            "All Categories",
+            "Basic Features",
+            "Peak Features",
+            "Shape Features",
+            "Derivative Features",
+            "Area Features"
         ])
-        type_layout.addWidget(self.feature_type_combo)
-        
-        # Target column selection (for time series data)
-        type_layout.addWidget(QLabel("Target Column:"))
-        self.target_column_combo = QComboBox()
-        type_layout.addWidget(self.target_column_combo)
-        
+        self.category_combo.currentIndexChanged.connect(self.update_feature_display)
+        category_layout.addWidget(self.category_combo)
+
         # Extract button
         self.extract_btn = QPushButton("Extract Features")
         self.extract_btn.clicked.connect(self.extract_features)
-        type_layout.addWidget(self.extract_btn)
-        
-        extraction_layout.addLayout(type_layout)
-        
-        # Feature table
+        self.extract_btn.setStyleSheet("background-color: #4CAF50; color: white; font-weight: bold; padding: 8px;")
+        category_layout.addWidget(self.extract_btn)
+
+        extraction_layout.addLayout(category_layout)
+
+        # Feature table with descriptions
         self.feature_table = QTableWidget()
-        self.feature_table.setColumnCount(3)
-        self.feature_table.setHorizontalHeaderLabels(["Feature", "Value", "Include"])
-        self.feature_table.horizontalHeader().setStretchLastSection(True)
+        self.feature_table.setColumnCount(4)
+        self.feature_table.setHorizontalHeaderLabels(["Category", "Feature", "Value", "Description"])
+        self.feature_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        self.feature_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        self.feature_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        self.feature_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
+        self.feature_table.setAlternatingRowColors(True)
+        self.feature_table.setStyleSheet("alternate-background-color: #f0f0f0;")
         extraction_layout.addWidget(self.feature_table)
-        
-        # Advanced options
-        options_layout = QGridLayout()
-        
-        # Windowing options for time series
-        options_layout.addWidget(QLabel("Window Size:"), 0, 0)
-        self.window_spin = QSpinBox()
-        self.window_spin.setRange(1, 1000)
-        self.window_spin.setValue(100)
-        options_layout.addWidget(self.window_spin, 0, 1)
-        
-        options_layout.addWidget(QLabel("Overlap:"), 0, 2)
-        self.overlap_spin = QSpinBox()
-        self.overlap_spin.setRange(0, 99)
-        self.overlap_spin.setValue(50)
-        self.overlap_spin.setSuffix("%")
-        options_layout.addWidget(self.overlap_spin, 0, 3)
-        
-        # Peak detection threshold for voltammetric data
-        options_layout.addWidget(QLabel("Peak Threshold:"), 1, 0)
-        self.peak_spin = QSpinBox()
-        self.peak_spin.setRange(1, 100)
-        self.peak_spin.setValue(10)
-        self.peak_spin.setSuffix("%")
-        options_layout.addWidget(self.peak_spin, 1, 1)
-        
-        # Custom feature option
-        self.custom_check = QCheckBox("Add custom calculation")
-        options_layout.addWidget(self.custom_check, 1, 2, 1, 2)
-        
-        extraction_layout.addLayout(options_layout)
+
+        # Save features button
+        save_layout = QHBoxLayout()
+        self.save_btn = QPushButton("Save Features")
+        self.save_btn.clicked.connect(self.save_features)
+        self.save_btn.setEnabled(False)  # Initially disabled until features are extracted
+        self.save_btn.setStyleSheet("background-color: #2196F3; color: white; font-weight: bold; padding: 8px;")
+        save_layout.addWidget(self.save_btn)
+
+        # Continue to model button
+        self.continue_btn = QPushButton("Continue to Model Training →")
+        self.continue_btn.clicked.connect(self.continue_to_model)
+        self.continue_btn.setEnabled(False)  # Initially disabled until features are saved
+        self.continue_btn.setStyleSheet("background-color: #9C27B0; color: white; font-weight: bold; padding: 8px;")
+        save_layout.addWidget(self.continue_btn)
+
+        extraction_layout.addLayout(save_layout)
         extraction_group.setLayout(extraction_layout)
         splitter.addWidget(extraction_group)
-        
-        # Feature Selection Section
-        selection_group = QGroupBox("Feature Selection")
-        selection_layout = QVBoxLayout()
-        
-        # Method selection
-        method_layout = QHBoxLayout()
-        method_layout.addWidget(QLabel("Selection Method:"))
-        
-        self.method_group = QButtonGroup()
-        
-        self.correlation_radio = QRadioButton("Correlation")
-        self.correlation_radio.setChecked(True)
-        self.method_group.addButton(self.correlation_radio)
-        method_layout.addWidget(self.correlation_radio)
-        
-        self.variance_radio = QRadioButton("Variance")
-        self.method_group.addButton(self.variance_radio)
-        method_layout.addWidget(self.variance_radio)
-        
-        self.rfe_radio = QRadioButton("RFE")
-        self.method_group.addButton(self.rfe_radio)
-        method_layout.addWidget(self.rfe_radio)
-        
-        self.pca_radio = QRadioButton("PCA")
-        self.method_group.addButton(self.pca_radio)
-        method_layout.addWidget(self.pca_radio)
-        
-        # Threshold/number of features
-        method_layout.addWidget(QLabel("Threshold/Num Features:"))
-        self.threshold_spin = QSpinBox()
-        self.threshold_spin.setRange(1, 100)
-        self.threshold_spin.setValue(20)
-        method_layout.addWidget(self.threshold_spin)
-        
-        # Select button
-        self.select_btn = QPushButton("Select Features")
-        self.select_btn.clicked.connect(self.select_features)
-        method_layout.addWidget(self.select_btn)
-        
-        selection_layout.addLayout(method_layout)
-        
-        # Feature visualization
-        self.figure = Figure(figsize=(5, 4), dpi=100)
-        self.canvas = FigureCanvas(self.figure)
-        selection_layout.addWidget(self.canvas)
-        
-        # Visualization type
-        viz_layout = QHBoxLayout()
-        self.importance_btn = QPushButton("Feature Importance")
-        self.importance_btn.clicked.connect(lambda: self.visualize_features("importance"))
-        viz_layout.addWidget(self.importance_btn)
-        
-        self.correlation_btn = QPushButton("Correlation Matrix")
-        self.correlation_btn.clicked.connect(lambda: self.visualize_features("correlation"))
-        viz_layout.addWidget(self.correlation_btn)
-        
-        self.pca_btn = QPushButton("PCA Plot")
-        self.pca_btn.clicked.connect(lambda: self.visualize_features("pca"))
-        viz_layout.addWidget(self.pca_btn)
-        
-        selection_layout.addLayout(viz_layout)
-        
-        # Selected features summary
-        selection_layout.addWidget(QLabel("Selected Features:"))
-        self.selected_features_label = QLabel("No features selected")
-        selection_layout.addWidget(self.selected_features_label)
-        
-        # Confirm button
-        self.confirm_btn = QPushButton("Confirm Features for Model Training")
-        self.confirm_btn.clicked.connect(self.confirm_features)
-        selection_layout.addWidget(self.confirm_btn)
-        
-        selection_group.setLayout(selection_layout)
-        splitter.addWidget(selection_group)
-        
+
+        # Feature Visualization Section
+        viz_group = QGroupBox("Feature Visualization")
+        viz_layout = QVBoxLayout()
+
+        # Add a label explaining the visualization
+        viz_info = QLabel(
+            "<p>This section will show visualizations of your extracted features.</p>"
+            "<p>In the future, this will include:</p>"
+            "<ul>"
+            "<li>Feature importance charts</li>"
+            "<li>Feature correlation heatmaps</li>"
+            "<li>Feature distribution plots</li>"
+            "</ul>"
+        )
+        viz_info.setWordWrap(True)
+        viz_info.setStyleSheet("font-size: 11pt; margin: 10px;")
+        viz_layout.addWidget(viz_info)
+
+        viz_group.setLayout(viz_layout)
+        splitter.addWidget(viz_group)
+
         layout.addWidget(splitter)
         self.setLayout(layout)
-        
+
         # Initialize with disabled state
         self.set_enabled(False)
-        
+
     def set_enabled(self, enabled):
         """Enable or disable controls based on data availability"""
         self.extract_btn.setEnabled(enabled)
-        self.select_btn.setEnabled(enabled)
-        self.importance_btn.setEnabled(enabled)
-        self.correlation_btn.setEnabled(enabled)
-        self.pca_btn.setEnabled(enabled)
-        self.confirm_btn.setEnabled(enabled)
-    
+
     def update_column_list(self):
-        """Update the list of available columns from the dataset"""
-        if self.app_data.get("processed_data") is not None:
-            data = self.app_data["processed_data"]
-            self.target_column_combo.clear()
-            self.target_column_combo.addItems(data.columns)
-    
+        """Update UI based on data availability"""
+        if self.app_data.get("dataset") is not None:
+            self.set_enabled(True)
+
     def extract_features(self):
-        """Extract features based on user selection"""
-        if self.app_data.get("processed_data") is None:
+        """Extract electrochemical features from the voltammetric data"""
+        if "dataset" not in self.app_data or self.app_data["dataset"] is None:
+            QMessageBox.warning(self, "No Data", "Please load data before extracting features.")
             return
-            
-        data = self.app_data["processed_data"]
-        sensor_type = self.app_data.get("sensor_type", "")
-        feature_type = self.feature_type_combo.currentText()
-        
-        features = {}
-        
-        # Extract different types of features based on selection
-        if feature_type in ["Electrochemical Features", "All Features"]:
-            if sensor_type == "Voltammetric":
-                volt_features = extract_voltammetric_features(data)
-                features.update(volt_features)
-            
-        if feature_type in ["Statistical Features", "All Features"]:
-            # Extract basic statistical features for all numeric columns
-            for col in data.select_dtypes(include=np.number).columns:
-                features[f"{col}_mean"] = data[col].mean()
-                features[f"{col}_std"] = data[col].std()
-                features[f"{col}_min"] = data[col].min()
-                features[f"{col}_max"] = data[col].max()
-                features[f"{col}_range"] = data[col].max() - data[col].min()
-        
-        if feature_type in ["Time Domain Features", "All Features"]:
-            target_col = self.target_column_combo.currentText()
-            if target_col:
-                time_features = extract_time_series_features(data, target_col)
-                # Prefix with column name
-                time_features = {f"{target_col}_{k}": v for k, v in time_features.items()}
-                features.update(time_features)
-        
-        # TODO: Add frequency domain features
-        
-        # Update feature table
-        self.feature_table.setRowCount(len(features))
-        for i, (key, value) in enumerate(features.items()):
-            self.feature_table.setItem(i, 0, QTableWidgetItem(key))
-            self.feature_table.setItem(i, 1, QTableWidgetItem(str(round(value, 6))))
-            
-            # Add checkbox for feature selection
-            checkbox = QCheckBox()
-            checkbox.setChecked(True)
-            self.feature_table.setCellWidget(i, 2, checkbox)
-        
-        # Store features in app_data
-        self.app_data["features"] = features
-        
-        # Update feature visualization
-        self.visualize_features("importance")
-    
-    def select_features(self):
-        """Select features based on the chosen method"""
-        if self.app_data.get("features") is None:
+
+        data = self.app_data["dataset"]
+
+        try:
+            # Check data format
+            if "Potential" in data.columns and "Current" in data.columns:
+                # Standard format with Potential and Current columns
+                QMessageBox.information(self, "Processing", "Processing data in standard format (Potential/Current columns)...")
+                features = extract_voltammetric_features(data)
+                self.app_data["features"] = features
+                self.app_data["feature_matrix"] = None  # No feature matrix for this format
+            else:
+                # New format with voltage columns and metadata
+                QMessageBox.information(self, "Processing", "Processing data in new format (voltage columns with metadata)...")
+                feature_matrix = extract_features_from_samples(data)
+
+                if feature_matrix.empty:
+                    QMessageBox.warning(self, "Error", "Could not extract features from the data. Please check the data format.")
+                    return
+
+                # Store both the feature matrix and a flattened version for the UI
+                self.app_data["feature_matrix"] = feature_matrix
+
+                # Debug print to verify feature matrix
+                print("\n==== FEATURE EXTRACTION COMPLETE ====")
+                print(f"Feature matrix shape: {feature_matrix.shape}")
+                print(f"Feature matrix columns: {feature_matrix.columns.tolist()}")
+                metadata_cols = [col for col in feature_matrix.columns if col in ['concentration', 'antibiotic']]
+                print(f"Metadata columns: {metadata_cols}")
+                print("===================================\n")
+
+                # For backward compatibility, create a flattened version of the first sample's features
+                # This is used for the feature display in the UI
+                first_sample_features = {}
+                for col in feature_matrix.columns:
+                    if col not in ['concentration', 'antibiotic', 'path']:
+                        first_sample_features[col] = feature_matrix[col].iloc[0]
+
+                self.app_data["features"] = first_sample_features
+
+                # DIRECT APPROACH: Also store the metadata columns separately for easy access
+                self.app_data["metadata_columns"] = metadata_cols
+
+                # Show summary of extracted features
+                num_samples = len(feature_matrix)
+                num_features = len(feature_matrix.columns) - sum(1 for col in feature_matrix.columns if col in ['concentration', 'antibiotic', 'path'])
+
+                QMessageBox.information(
+                    self,
+                    "Feature Extraction Complete",
+                    f"Successfully extracted {num_features} features from {num_samples} samples.\n\n"
+                    f"Metadata columns preserved: {[col for col in feature_matrix.columns if col in ['concentration', 'antibiotic']]}\n\n"
+                    f"The feature matrix is now ready for model training."
+                )
+
+            # Update feature display
+            self.update_feature_display()
+
+            # Enable save button
+            self.save_btn.setEnabled(True)
+
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Error extracting features: {str(e)}")
+
+    def update_feature_display(self):
+        """Update the feature table based on the selected category"""
+        if "features" not in self.app_data or not self.app_data["features"]:
             return
-            
-        # Get selected features from checkboxes
-        selected_features = {}
-        for i in range(self.feature_table.rowCount()):
-            feature_name = self.feature_table.item(i, 0).text()
-            checkbox = self.feature_table.cellWidget(i, 2)
-            if checkbox.isChecked():
-                value_str = self.feature_table.item(i, 1).text()
-                selected_features[feature_name] = float(value_str)
-        
-        # Convert to DataFrame for selection methods
-        feature_df = pd.DataFrame([selected_features])
-        
-        # Get selection method
-        if self.correlation_radio.isChecked():
-            method = "correlation"
-        elif self.variance_radio.isChecked():
-            method = "variance"
-        elif self.rfe_radio.isChecked():
-            method = "rfe"
-        elif self.pca_radio.isChecked():
-            method = "pca"
-        
-        # Apply feature selection if we have a target
-        if self.app_data.get("target") is not None:
-            target = self.app_data["target"]
-            threshold = self.threshold_spin.value() / 100  # Convert percentage to fraction
-            
-            # Note: In a real app, you would connect to your select_features implementation
-            # This is simplified here
-            selected_feature_names = list(selected_features.keys())[:self.threshold_spin.value()]
-            
-            # Update selected features
-            self.app_data["selected_features"] = selected_feature_names
-            
-            # Update label
-            self.selected_features_label.setText(", ".join(selected_feature_names))
-        else:
-            # If no target, just use the top N features
-            top_n = min(self.threshold_spin.value(), len(selected_features))
-            selected_feature_names = list(selected_features.keys())[:top_n]
-            
-            # Update selected features
-            self.app_data["selected_features"] = selected_feature_names
-            
-            # Update label
-            self.selected_features_label.setText(", ".join(selected_feature_names))
-    
-    def visualize_features(self, viz_type):
-        """Visualize features based on the selected visualization type"""
-        if self.app_data.get("features") is None:
-            return
-            
-        self.figure.clear()
-        ax = self.figure.add_subplot(111)
-        
+
         features = self.app_data["features"]
-        
-        if viz_type == "importance":
-            # Plot feature values as a bar chart
-            feature_names = list(features.keys())
-            feature_values = list(features.values())
-            
-            # Sort by value for better visualization
-            sorted_indices = np.argsort(feature_values)
-            sorted_names = [feature_names[i] for i in sorted_indices]
-            sorted_values = [feature_values[i] for i in sorted_indices]
-            
-            # Plot only top 15 if we have more
-            if len(sorted_names) > 15:
-                sorted_names = sorted_names[-15:]
-                sorted_values = sorted_values[-15:]
-                
-            ax.barh(sorted_names, sorted_values)
-            ax.set_title("Feature Values")
-            ax.set_xlabel("Value")
-            
-        elif viz_type == "correlation":
-            # Create a correlation matrix visualization
-            # This is a simplified version - in a real app, you would compute
-            # actual correlations between features
-            
-            # Create a mock correlation matrix for demonstration
-            feature_names = list(features.keys())[:10]  # Limit to 10 for readability
-            n_features = len(feature_names)
-            
-            # Random correlation matrix for demo purposes
-            np.random.seed(42)
-            corr_matrix = np.random.rand(n_features, n_features)
-            # Make it symmetric
-            corr_matrix = (corr_matrix + corr_matrix.T) / 2
-            # Set diagonal to 1
-            np.fill_diagonal(corr_matrix, 1)
-            
-            im = ax.imshow(corr_matrix, cmap='coolwarm', vmin=-1, vmax=1)
-            self.figure.colorbar(im, ax=ax)
-            
-            # Set ticks
-            ax.set_xticks(np.arange(n_features))
-            ax.set_yticks(np.arange(n_features))
-            ax.set_xticklabels(feature_names, rotation=90)
-            ax.set_yticklabels(feature_names)
-            
-            ax.set_title("Feature Correlation Matrix")
-            
-        elif viz_type == "pca":
-            # Create a mock PCA plot for demonstration
-            ax.set_title("PCA of Features")
-            ax.set_xlabel("PC1")
-            ax.set_ylabel("PC2")
-            
-            # Random scatter points for demo
-            np.random.seed(42)
-            x = np.random.randn(20)
-            y = np.random.randn(20)
-            
-            # Different colors for different classes
-            colors = ['r', 'g', 'b', 'y']
-            classes = np.random.randint(0, 4, 20)
-            
-            for i, color in enumerate(colors):
-                mask = classes == i
-                ax.scatter(x[mask], y[mask], c=color, label=f'Class {i}')
-            
-            ax.legend()
-        
-        self.canvas.draw()
-    
-    def confirm_features(self):
-        """Confirm feature selection and signal ready for model training"""
-        if self.app_data.get("selected_features") is not None:
-            self.features_ready.emit(True)
-    
+        selected_category = self.category_combo.currentText()
+
+        # Filter features by category
+        if selected_category == "All Categories":
+            filtered_features = features
+        else:
+            # Convert "Basic Features" to "basic" for filtering
+            category_prefix = selected_category.lower().split()[0]
+            filtered_features = {k: v for k, v in features.items() if k.startswith(category_prefix)}
+
+        # Update feature table
+        self.feature_table.setRowCount(len(filtered_features))
+
+        for i, (key, value) in enumerate(filtered_features.items()):
+            # Split the key to get category and feature name
+            parts = key.split('_', 1)
+            category = parts[0]
+            feature_name = parts[1] if len(parts) > 1 else key
+
+            # Format category name for display
+            display_category = category.capitalize()
+
+            # Get feature description
+            description = VOLTAMMETRIC_FEATURE_DESCRIPTIONS.get(key, "")
+
+            # Add items to table
+            self.feature_table.setItem(i, 0, QTableWidgetItem(display_category))
+            self.feature_table.setItem(i, 1, QTableWidgetItem(feature_name))
+
+            # Format value based on its magnitude
+            if abs(value) < 0.001 or abs(value) > 1000:
+                formatted_value = f"{value:.2e}"
+            else:
+                formatted_value = f"{value:.6f}"
+
+            self.feature_table.setItem(i, 2, QTableWidgetItem(formatted_value))
+            self.feature_table.setItem(i, 3, QTableWidgetItem(description))
+
+            # Color-code rows by category
+            if category == "basic":
+                color = "#e3f2fd"  # Light blue
+            elif category == "peak":
+                color = "#e8f5e9"  # Light green
+            elif category == "shape":
+                color = "#fff3e0"  # Light orange
+            elif category == "derivative":
+                color = "#f3e5f5"  # Light purple
+            elif category == "area":
+                color = "#e0f7fa"  # Light cyan
+            else:
+                color = "#ffffff"  # White
+
+            for j in range(4):
+                item = self.feature_table.item(i, j)
+                if item:
+                    item.setBackground(QColor(color))
+
+        # Resize rows to content
+        self.feature_table.resizeRowsToContents()
+
+    def save_features(self):
+        """Save extracted features to the experiment"""
+        if "features" not in self.app_data or not self.app_data["features"]:
+            QMessageBox.warning(self, "No Features", "No features to save. Please extract features first.")
+            return
+
+        if "current_experiment_id" not in self.app_data or not self.app_data["current_experiment_id"]:
+            QMessageBox.warning(self, "No Experiment", "No active experiment. Please load or create an experiment first.")
+            return
+
+        try:
+            # Get the experiment manager
+            experiment_manager = ExperimentManager()
+
+            # Get the current experiment ID
+            experiment_id = self.app_data["current_experiment_id"]
+
+            # Check if we have a feature matrix (new format) or just features (old format)
+            if "feature_matrix" in self.app_data and self.app_data["feature_matrix"] is not None:
+                # New format - save the feature matrix
+                feature_matrix = self.app_data["feature_matrix"]
+
+                # Create metadata
+                metadata = {
+                    "extraction_date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "sample_count": len(feature_matrix),
+                    "feature_count": len(feature_matrix.columns) - sum(1 for col in feature_matrix.columns if col in ['concentration', 'antibiotic', 'path']),
+                    "metadata_columns": [col for col in feature_matrix.columns if col in ['concentration', 'antibiotic']],
+                    "description": "Sample-by-sample electrochemical features extracted from voltammetric data"
+                }
+
+                # Save the feature matrix
+                file_path = experiment_manager.save_feature_matrix(experiment_id, feature_matrix, metadata)
+
+                # Store the features file path in app_data
+                self.app_data["features_file_path"] = file_path
+
+                # Enable the continue button
+                self.continue_btn.setEnabled(True)
+
+                QMessageBox.information(
+                    self,
+                    "Success",
+                    f"Feature matrix with {len(feature_matrix)} samples saved successfully to:\n{file_path}"
+                )
+            else:
+                # Old format - save the features dictionary
+                features = self.app_data["features"]
+
+                # Create metadata
+                metadata = {
+                    "extraction_date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "feature_count": len(features),
+                    "categories": list(set([k.split('_')[0] for k in features.keys()])),
+                    "description": "Electrochemical features extracted from voltammetric data"
+                }
+
+                # Save the features
+                file_path = experiment_manager.save_features(experiment_id, features, metadata)
+
+                # Store the features file path in app_data
+                self.app_data["features_file_path"] = file_path
+
+                # Enable the continue button
+                self.continue_btn.setEnabled(True)
+
+                QMessageBox.information(
+                    self,
+                    "Success",
+                    f"Features saved successfully to:\n{file_path}"
+                )
+
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Error saving features: {str(e)}")
+
+        finally:
+            # Close the experiment manager
+            if 'experiment_manager' in locals():
+                experiment_manager.close()
+
+    def continue_to_model(self):
+        """Signal that features are ready and continue to model training"""
+        # DIRECT APPROACH: Verify that feature_matrix is in app_data before continuing
+        print("\n==== CONTINUE TO MODEL CALLED ====")
+        print(f"app_data keys: {list(self.app_data.keys())}")
+
+        if "feature_matrix" in self.app_data and self.app_data["feature_matrix"] is not None:
+            feature_matrix = self.app_data["feature_matrix"]
+            print(f"Feature matrix shape: {feature_matrix.shape}")
+            print(f"Feature matrix columns: {feature_matrix.columns.tolist()}")
+
+            # CRITICAL FIX: Make sure the feature_matrix is properly stored in app_data
+            # This ensures it's accessible to other tabs
+            self.app_data["feature_matrix"] = feature_matrix
+
+            metadata_cols = [col for col in feature_matrix.columns if col in ['concentration', 'antibiotic']]
+            print(f"Metadata columns: {metadata_cols}")
+
+            # CRITICAL FIX: Store metadata columns separately for easy access
+            self.app_data["metadata_columns"] = metadata_cols
+
+            if metadata_cols:
+                # Show a message about available target variables
+                QMessageBox.information(
+                    self,
+                    "Target Variables Available",
+                    f"The following columns can be used as target variables in the Model Training tab:\n\n{', '.join(metadata_cols)}"
+                )
+            else:
+                QMessageBox.warning(
+                    self,
+                    "No Target Variables",
+                    "No metadata columns (concentration, antibiotic) found in the dataset. You may need to add these columns to your data."
+                )
+        else:
+            print("No feature_matrix found in app_data!")
+
+        print("===================================\n")
+
+        # Signal to continue to model training tab
+        self.features_ready.emit(True)
+        QMessageBox.information(self, "Continuing", "Proceeding to Model Training tab.")
+
+    def select_features(self):
+        """This method is kept for backward compatibility"""
+        # Signal that features are ready
+        self.features_ready.emit(True)
+
+    # Visualization methods have been removed as part of simplification
+
     def showEvent(self, event):
         """Handle when tab is shown"""
         super().showEvent(event)
         # Update column list and enable/disable controls based on data
         self.update_column_list()
-        self.set_enabled(self.app_data.get("processed_data") is not None)
+        self.set_enabled(self.app_data.get("dataset") is not None)

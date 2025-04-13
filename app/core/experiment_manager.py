@@ -33,8 +33,8 @@ class ExperimentManager:
 
     def _setup_database(self):
         """Initialize SQLite database"""
-        db_path = self.base_dir / "experiments.db"
-        self.conn = sqlite3.connect(db_path)
+        self.db_path = str(self.base_dir / "experiments.db")
+        self.conn = sqlite3.connect(self.db_path)
         self.cursor = self.conn.cursor()
 
         # Create experiments table
@@ -383,53 +383,251 @@ class ExperimentManager:
             })
         return steps
 
-    def get_features(self, experiment_id):
-        """Get features for an experiment"""
-        self.cursor.execute('''
-        SELECT * FROM features WHERE experiment_id = ?
-        ''', (experiment_id,))
+    # The features and labels tables have been removed from the database schema
+    # Features and labels are now stored in CSV files instead
 
-        features = []
-        for feature in self.cursor.fetchall():
-            features.append({
-                'id': feature[0],
-                'experiment_id': feature[1],
-                'feature_name': feature[2],
-                'value': feature[3],
-                'created_at': feature[4]
-            })
-        return features
+    def save_features(self, experiment_id, features, metadata=None):
+        """Save features for an experiment to CSV file
 
-    def add_labels(self, experiment_id, labels_df):
-        """Add labels to the experiment"""
-        # Save labels to database
-        for _, row in labels_df.iterrows():
-            self.cursor.execute('''
-            INSERT INTO labels (experiment_id, sample_id, label_value, label_type)
-            VALUES (?, ?, ?, ?)
-            ''', (experiment_id, str(row['sample_id']),
-                  float(row['label_value']),
-                  str(row.get('label_type', 'unknown'))))
+        Args:
+            experiment_id: ID of the experiment
+            features: Dictionary of features or DataFrame of features
+            metadata: Optional dictionary of metadata about the features
 
+        Returns:
+            Path to the saved features file
+        """
+        # Create features directory if it doesn't exist
+        features_dir = self.base_dir / "features" / f"experiment_{experiment_id}"
+        features_dir.mkdir(parents=True, exist_ok=True)
+
+        # Convert features to DataFrame if it's a dictionary
+        if isinstance(features, dict):
+            # Convert flat dictionary to DataFrame with one row
+            df = pd.DataFrame([features])
+        else:
+            df = features
+
+        # Save features to CSV
+        file_path = features_dir / "features.csv"
+        df.to_csv(file_path, index=False)
+
+        # Save metadata if provided
+        if metadata:
+            metadata_path = features_dir / "metadata.json"
+            with open(metadata_path, 'w') as f:
+                json.dump(metadata, f, indent=2)
+
+        # Update experiment status
+        self.cursor.execute(
+            "UPDATE experiments SET status = ? WHERE id = ?",
+            ("features_extracted", experiment_id)
+        )
         self.conn.commit()
 
-    def get_labels(self, experiment_id):
-        """Get labels for an experiment"""
-        self.cursor.execute('''
-        SELECT * FROM labels WHERE experiment_id = ?
-        ''', (experiment_id,))
+        print(f"Features saved to {file_path}")
+        return str(file_path)
 
-        labels = []
-        for label in self.cursor.fetchall():
-            labels.append({
-                'id': label[0],
-                'experiment_id': label[1],
-                'sample_id': label[2],
-                'label_value': label[3],
-                'label_type': label[4],
-                'created_at': label[5]
-            })
-        return labels
+    def save_feature_matrix(self, experiment_id, feature_matrix, metadata=None):
+        """Save a feature matrix for an experiment to CSV file
+
+        This is specifically for the sample-by-sample feature extraction where
+        each row represents a sample with its features and metadata.
+
+        Args:
+            experiment_id: ID of the experiment
+            feature_matrix: DataFrame where each row is a sample with features and metadata
+            metadata: Optional dictionary of metadata about the feature matrix
+
+        Returns:
+            Path to the saved feature matrix file
+        """
+        # Create features directory if it doesn't exist
+        features_dir = self.base_dir / "features" / f"experiment_{experiment_id}"
+        features_dir.mkdir(parents=True, exist_ok=True)
+
+        # Save feature matrix to CSV
+        file_path = features_dir / "feature_matrix.csv"
+        feature_matrix.to_csv(file_path, index=False)
+
+        # Save metadata if provided
+        if metadata:
+            metadata_path = features_dir / "matrix_metadata.json"
+            with open(metadata_path, 'w') as f:
+                json.dump(metadata, f, indent=2)
+
+        # Update experiment status
+        self.cursor.execute(
+            "UPDATE experiments SET status = ? WHERE id = ?",
+            ("features_extracted", experiment_id)
+        )
+        self.conn.commit()
+
+        print(f"Feature matrix saved to {file_path}")
+        return str(file_path)
+
+    def get_features(self, experiment_id):
+        """Get features for an experiment from CSV file
+
+        Args:
+            experiment_id: ID of the experiment
+
+        Returns:
+            DataFrame of features or empty list if not found
+        """
+        features_dir = self.base_dir / "features" / f"experiment_{experiment_id}"
+        file_path = features_dir / "features.csv"
+
+        if file_path.exists():
+            try:
+                df = pd.read_csv(file_path)
+                return df
+            except Exception as e:
+                print(f"Error loading features: {e}")
+
+        return pd.DataFrame()
+
+    def get_feature_matrix(self, experiment_id):
+        """Get feature matrix for an experiment from CSV file
+
+        This is for the sample-by-sample feature extraction format where
+        each row represents a sample with its features and metadata.
+
+        Args:
+            experiment_id: ID of the experiment
+
+        Returns:
+            DataFrame of feature matrix or empty DataFrame if not found
+        """
+        features_dir = self.base_dir / "features" / f"experiment_{experiment_id}"
+        file_path = features_dir / "feature_matrix.csv"
+
+        if file_path.exists():
+            try:
+                df = pd.read_csv(file_path)
+                return df
+            except Exception as e:
+                print(f"Error loading feature matrix: {e}")
+
+        # If feature matrix doesn't exist, try to load regular features
+        # and check if they have metadata columns
+        regular_features = self.get_features(experiment_id)
+        if not regular_features.empty and any(col in regular_features.columns for col in ['concentration', 'antibiotic']):
+            return regular_features
+
+        return pd.DataFrame()
+
+    def get_feature_metadata(self, experiment_id, matrix=False):
+        """Get metadata about features for an experiment
+
+        Args:
+            experiment_id: ID of the experiment
+            matrix: Whether to get metadata for the feature matrix (True) or regular features (False)
+
+        Returns:
+            Dictionary of metadata or empty dict if not found
+        """
+        features_dir = self.base_dir / "features" / f"experiment_{experiment_id}"
+
+        # Determine which metadata file to load
+        if matrix:
+            metadata_path = features_dir / "matrix_metadata.json"
+        else:
+            metadata_path = features_dir / "metadata.json"
+
+        if metadata_path.exists():
+            try:
+                with open(metadata_path, 'r') as f:
+                    return json.load(f)
+            except Exception as e:
+                print(f"Error loading feature metadata: {e}")
+
+        # If matrix metadata doesn't exist but was requested, try regular metadata
+        if matrix and not metadata_path.exists():
+            regular_metadata_path = features_dir / "metadata.json"
+            if regular_metadata_path.exists():
+                try:
+                    with open(regular_metadata_path, 'r') as f:
+                        metadata = json.load(f)
+                        # Check if this might be matrix metadata
+                        if 'sample_count' in metadata or 'metadata_columns' in metadata:
+                            return metadata
+                except Exception:
+                    pass
+
+        return {}
+
+    def add_labels(self, experiment_id, labels_df):
+        """Add labels to the experiment by saving to CSV"""
+        # Create labels directory if it doesn't exist
+        labels_dir = self.base_dir / "processed" / f"experiment_{experiment_id}"
+        labels_dir.mkdir(parents=True, exist_ok=True)
+
+        # Save labels to CSV
+        file_path = labels_dir / "labels.csv"
+        labels_df.to_csv(file_path, index=False)
+
+        return str(file_path)
+
+    def get_labels(self, experiment_id):
+        """Get labels for an experiment from CSV file"""
+        labels_dir = self.base_dir / "processed" / f"experiment_{experiment_id}"
+        file_path = labels_dir / "labels.csv"
+
+        if file_path.exists():
+            try:
+                df = pd.read_csv(file_path)
+                return df.to_dict('records')
+            except Exception as e:
+                print(f"Error loading labels: {e}")
+
+        return []
+
+    def delete_experiment(self, experiment_id):
+        """Delete an experiment and all associated data"""
+        try:
+            # Begin transaction
+            self.conn.execute("BEGIN TRANSACTION")
+
+            # Delete associated data first (due to foreign key constraints)
+            self.cursor.execute("DELETE FROM preprocessing_steps WHERE experiment_id = ?", (experiment_id,))
+
+            # Get experiment details for file cleanup
+            self.cursor.execute("SELECT file_path FROM experiments WHERE id = ?", (experiment_id,))
+            experiment = self.cursor.fetchone()
+
+            # Delete the experiment
+            self.cursor.execute("DELETE FROM experiments WHERE id = ?", (experiment_id,))
+
+            # Commit transaction
+            self.conn.commit()
+
+            # Clean up associated files
+            if experiment:
+                # Delete processed data directory
+                processed_dir = self.base_dir / "processed" / f"experiment_{experiment_id}"
+                if processed_dir.exists():
+                    import shutil
+                    shutil.rmtree(processed_dir)
+
+                # Delete features directory
+                features_dir = self.base_dir / "features" / f"experiment_{experiment_id}"
+                if features_dir.exists():
+                    import shutil
+                    shutil.rmtree(features_dir)
+
+                # Delete transformers directory
+                transformers_dir = self.base_dir / "transformers" / f"experiment_{experiment_id}"
+                if transformers_dir.exists():
+                    import shutil
+                    shutil.rmtree(transformers_dir)
+
+            return True
+        except Exception as e:
+            # Rollback in case of error
+            self.conn.rollback()
+            print(f"Error deleting experiment: {e}")
+            return False
 
     def close(self):
         """Close database connection"""

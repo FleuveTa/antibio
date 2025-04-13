@@ -90,6 +90,20 @@ class PredictionModuleWidget(QWidget):
 
     def enable_model_tab(self, enabled):
         """Enable the model tab when features are ready"""
+        # CRITICAL FIX: Ensure feature_matrix is properly passed to model tab
+        if enabled and "feature_matrix" in self.app_data and self.app_data["feature_matrix"] is not None:
+            print("\n==== ENABLING MODEL TAB ====")
+            print(f"Feature matrix exists with shape: {self.app_data['feature_matrix'].shape}")
+            print(f"Feature matrix columns: {self.app_data['feature_matrix'].columns.tolist()}")
+
+            # Ensure metadata columns are stored separately
+            metadata_cols = [col for col in self.app_data['feature_matrix'].columns
+                            if col in ['concentration', 'antibiotic']]
+            if metadata_cols:
+                print(f"Storing metadata columns in app_data: {metadata_cols}")
+                self.app_data["metadata_columns"] = metadata_cols
+            print("===========================\n")
+
         self.tabs.setTabEnabled(3, enabled)
         if enabled:
             self.tabs.setCurrentIndex(3)
