@@ -4,9 +4,10 @@ from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
 from PyQt5.QtGui import QColor
 from PyQt5.QtCore import Qt, pyqtSignal
 from datetime import datetime
+import pandas as pd
 
 from app.core.feature_eng import (extract_voltammetric_features, extract_features_from_samples,
-                                 VOLTAMMETRIC_FEATURE_DESCRIPTIONS)
+                                filter_low_importance_features, extract_raw_features_from_samples)
 from app.core.experiment_manager import ExperimentManager
 
 
@@ -54,22 +55,32 @@ class FeatureEngineeringTab(QWidget):
         self.category_combo.currentIndexChanged.connect(self.update_feature_display)
         category_layout.addWidget(self.category_combo)
 
+        extraction_layout.addLayout(category_layout)
+
+        # Feature extraction method selection
+        method_layout = QHBoxLayout()
+        method_layout.addWidget(QLabel("Feature Extraction Method:"))
+        self.method_combo = QComboBox()
+        self.method_combo.addItems([
+            "Calculated Features",  # Default - extract calculated features
+            "Raw Voltage Features"  # New option - use raw voltage values as features
+        ])
+        self.method_combo.setToolTip("'Calculated Features' extracts meaningful electrochemical features.\n'Raw Voltage Features' uses the raw current values at each voltage point as features.")
+        method_layout.addWidget(self.method_combo)
+
         # Extract button
         self.extract_btn = QPushButton("Extract Features")
         self.extract_btn.clicked.connect(self.extract_features)
         self.extract_btn.setStyleSheet("background-color: #4CAF50; color: white; font-weight: bold; padding: 8px;")
-        category_layout.addWidget(self.extract_btn)
+        method_layout.addWidget(self.extract_btn)
 
-        extraction_layout.addLayout(category_layout)
+        extraction_layout.addLayout(method_layout)
 
-        # Feature table with descriptions
+        # Feature table - simplified to only show feature names
         self.feature_table = QTableWidget()
-        self.feature_table.setColumnCount(4)
-        self.feature_table.setHorizontalHeaderLabels(["Category", "Feature", "Value", "Description"])
-        self.feature_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
-        self.feature_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
-        self.feature_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
-        self.feature_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
+        self.feature_table.setColumnCount(1)
+        self.feature_table.setHorizontalHeaderLabels(["Feature Name"])
+        self.feature_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
         self.feature_table.setAlternatingRowColors(True)
         self.feature_table.setStyleSheet("alternate-background-color: #f0f0f0;")
         extraction_layout.addWidget(self.feature_table)
@@ -142,13 +153,89 @@ class FeatureEngineeringTab(QWidget):
             if "Potential" in data.columns and "Current" in data.columns:
                 # Standard format with Potential and Current columns
                 QMessageBox.information(self, "Processing", "Processing data in standard format (Potential/Current columns)...")
-                features = extract_voltammetric_features(data)
-                self.app_data["features"] = features
-                self.app_data["feature_matrix"] = None  # No feature matrix for this format
+
+                # Check if we have RowIndex column to separate samples
+                if "RowIndex" in data.columns:
+                    # Process each sample (identified by RowIndex) separately
+                    QMessageBox.information(self, "Multiple Samples", "Detected multiple samples in the data. Processing each sample separately...")
+
+                    # Group data by RowIndex
+                    grouped_data = data.groupby("RowIndex")
+
+                    # Create a list to store features for each sample
+                    all_features = []
+
+                    # Process each sample
+                    for _, group in grouped_data:
+                        # Extract features for this sample
+                        sample_features = extract_voltammetric_features(group)
+
+                        # Add metadata if available
+                        for col in data.columns:
+                            if col not in ["Potential", "Current", "RowIndex"]:
+                                # Get the first value for this metadata column in this group
+                                sample_features[col] = group[col].iloc[0]
+
+                        # Add to the list of all features
+                        all_features.append(sample_features)
+
+                    # Convert to DataFrame
+                    feature_matrix = pd.DataFrame(all_features)
+
+                    # Store the feature matrix
+                    self.app_data["feature_matrix"] = feature_matrix
+
+                    # For backward compatibility, use the first sample's features
+                    self.app_data["features"] = all_features[0] if all_features else {}
+
+                    # Debug print
+                    print(f"Processed {len(all_features)} samples with {len(all_features[0]) if all_features else 0} features each")
+                else:
+                    # Single sample - process as before
+                    features = extract_voltammetric_features(data)
+                    self.app_data["features"] = features
+
+                    # Create a feature matrix with a single row for consistency
+                    feature_matrix = pd.DataFrame([features])
+                    self.app_data["feature_matrix"] = feature_matrix
             else:
                 # New format with voltage columns and metadata
                 QMessageBox.information(self, "Processing", "Processing data in new format (voltage columns with metadata)...")
-                feature_matrix = extract_features_from_samples(data)
+
+                # Check which feature extraction method was selected
+                extraction_method = self.method_combo.currentText()
+                print(f"\n==== FEATURE EXTRACTION METHOD ====")
+                print(f"Selected method: '{extraction_method}'")
+                print(f"Method type: {type(extraction_method)}")
+                print(f"Comparison result: {extraction_method == 'Raw Voltage Features'}")
+                print("===================================\n")
+
+                if extraction_method == "Raw Voltage Features":
+                    # Use raw voltage values as features
+                    QMessageBox.information(self, "Raw Features", "Using raw voltage values as features. This will use the 1040 current values at each voltage point as features.")
+                    print("Calling extract_raw_features_from_samples()")
+                    feature_matrix = extract_raw_features_from_samples(data)
+                    print(f"Raw feature matrix shape: {feature_matrix.shape}")
+                else:
+                    # Use calculated features with filtering
+                    QMessageBox.information(self, "Calculated Features", "Extracting calculated electrochemical features with automatic importance filtering.")
+                    print("Calling extract_features_from_samples()")
+                    # Use filter_features=True to only keep reliable features and remove low importance features
+                    feature_matrix = extract_features_from_samples(data, filter_features=True)
+                    print(f"Calculated feature matrix shape: {feature_matrix.shape}")
+
+                    # Apply additional filtering to remove features with importance < 0.4
+                    if not feature_matrix.empty:
+                        # Identify target column for supervised importance calculation if available
+                        target_column = None
+                        for col in ['concentration', 'antibiotic']:
+                            if col in feature_matrix.columns:
+                                target_column = col
+                                print(f"Using {col} as target column for feature importance calculation")
+                                break
+
+                        feature_matrix = filter_low_importance_features(feature_matrix, threshold=0.4, target_column=target_column)
+                        QMessageBox.information(self, "Feature Filtering", "Removed features with importance below 0.4")
 
                 if feature_matrix.empty:
                     QMessageBox.warning(self, "Error", "Could not extract features from the data. Please check the data format.")
@@ -161,32 +248,94 @@ class FeatureEngineeringTab(QWidget):
                 print("\n==== FEATURE EXTRACTION COMPLETE ====")
                 print(f"Feature matrix shape: {feature_matrix.shape}")
                 print(f"Feature matrix columns: {feature_matrix.columns.tolist()}")
-                metadata_cols = [col for col in feature_matrix.columns if col in ['concentration', 'antibiotic']]
+
+                # Use a more flexible approach to identify metadata columns
+                important_metadata = ['concentration', 'antibiotic', 'label', 'class', 'target']
+                metadata_cols = []
+
+                # First check for exact matches
+                for col in feature_matrix.columns:
+                    if col in important_metadata:
+                        metadata_cols.append(col)
+
+                # Then check for case-insensitive matches if we didn't find any
+                if not metadata_cols:
+                    for col in feature_matrix.columns:
+                        if col.lower() in [meta.lower() for meta in important_metadata]:
+                            metadata_cols.append(col)
+
+                # If still no metadata columns, look for any non-feature columns
+                if not metadata_cols:
+                    for col in feature_matrix.columns:
+                        if not any(col.startswith(prefix) for prefix in ['basic_', 'peak_', 'shape_', 'derivative_', 'area_']):
+                            if col != 'path':  # Skip path column
+                                metadata_cols.append(col)
+
                 print(f"Metadata columns: {metadata_cols}")
                 print("===================================\n")
 
-                # For backward compatibility, create a flattened version of the first sample's features
-                # This is used for the feature display in the UI
-                first_sample_features = {}
-                for col in feature_matrix.columns:
-                    if col not in ['concentration', 'antibiotic', 'path']:
-                        first_sample_features[col] = feature_matrix[col].iloc[0]
+                # Store all samples' features for display in the UI
+                # We'll create a dictionary where keys are sample indices and values are feature dictionaries
+                all_samples_features = {}
 
-                self.app_data["features"] = first_sample_features
+                # For each sample (row) in the feature matrix
+                for idx in range(len(feature_matrix)):
+                    sample_features = {}
+                    # Extract feature values for this sample
+                    for col in feature_matrix.columns:
+                        if col not in metadata_cols and col != 'path':
+                            sample_features[col] = feature_matrix[col].iloc[idx]
+
+                    # Add metadata for this sample
+                    sample_metadata = {}
+                    for col in metadata_cols:
+                        if col in feature_matrix.columns:
+                            sample_metadata[col] = feature_matrix[col].iloc[idx]
+
+                    # Store features with metadata
+                    all_samples_features[idx] = {
+                        'features': sample_features,
+                        'metadata': sample_metadata
+                    }
+
+                # Store all samples' features
+                self.app_data["all_samples_features"] = all_samples_features
+
+                # For backward compatibility, use the first sample's features for the UI
+                if all_samples_features and 0 in all_samples_features:
+                    self.app_data["features"] = all_samples_features[0]['features']
+                else:
+                    # Fallback to empty dictionary if no samples
+                    self.app_data["features"] = {}
 
                 # DIRECT APPROACH: Also store the metadata columns separately for easy access
                 self.app_data["metadata_columns"] = metadata_cols
 
                 # Show summary of extracted features
                 num_samples = len(feature_matrix)
-                num_features = len(feature_matrix.columns) - sum(1 for col in feature_matrix.columns if col in ['concentration', 'antibiotic', 'path'])
+                num_features = len(feature_matrix.columns) - len(metadata_cols) - sum(1 for col in feature_matrix.columns if col == 'path')
+
+                # Create a more detailed message about feature extraction
+                message = f"Successfully extracted {num_features} features from {num_samples} samples.\n\n"
+                message += f"Metadata columns preserved: {metadata_cols}\n\n"
+
+                # Add information about feature extraction method
+                extraction_method = self.method_combo.currentText()
+                if extraction_method == "Raw Voltage Features":
+                    message += "Raw voltage features were used, preserving all original current values at each voltage point.\n"
+                    message += "No feature importance filtering was applied to raw features.\n\n"
+                else:
+                    # Add information about feature importance filtering
+                    message += "Feature importance filtering was applied to keep only meaningful features.\n"
+                    message += "Features with importance below 0.4 were automatically removed.\n\n"
+
+                message += "The feature matrix is now ready for model training.\n\n"
+                message += f"These metadata columns can be used as target variables in the Model Training tab."
 
                 QMessageBox.information(
                     self,
                     "Feature Extraction Complete",
-                    f"Successfully extracted {num_features} features from {num_samples} samples.\n\n"
-                    f"Metadata columns preserved: {[col for col in feature_matrix.columns if col in ['concentration', 'antibiotic']]}\n\n"
-                    f"The feature matrix is now ready for model training."
+                    message
                 )
 
             # Update feature display
@@ -200,10 +349,59 @@ class FeatureEngineeringTab(QWidget):
 
     def update_feature_display(self):
         """Update the feature table based on the selected category"""
+        # Check if we have features to display
         if "features" not in self.app_data or not self.app_data["features"]:
             return
 
-        features = self.app_data["features"]
+        # Add a sample selector dropdown if we have multiple samples
+        if "all_samples_features" in self.app_data and len(self.app_data["all_samples_features"]) > 1:
+            # Check if we already have a sample selector
+            if not hasattr(self, "sample_selector"):
+                # Create a layout for the sample selector
+                sample_selector_layout = QHBoxLayout()
+
+                # Add a label
+                sample_label = QLabel("Select Sample:")
+                sample_selector_layout.addWidget(sample_label)
+
+                # Create the sample selector dropdown
+                self.sample_selector = QComboBox()
+
+                # Add sample indices to the dropdown
+                all_samples = self.app_data["all_samples_features"]
+                for idx in all_samples.keys():
+                    # Add metadata to the display text if available
+                    display_text = f"Sample {idx+1}"
+                    if 'metadata' in all_samples[idx]:
+                        metadata = all_samples[idx]['metadata']
+                        if metadata:
+                            metadata_str = ", ".join([f"{k}: {v}" for k, v in metadata.items()])
+                            display_text += f" ({metadata_str})"
+
+                    self.sample_selector.addItem(display_text, idx)
+
+                # Connect the change event
+                self.sample_selector.currentIndexChanged.connect(self.on_sample_changed)
+
+                # Add to layout
+                sample_selector_layout.addWidget(self.sample_selector)
+
+                # Insert the layout at the top of the form layout
+                self.form_layout.insertLayout(0, sample_selector_layout)
+
+            # Get the currently selected sample index
+            current_idx = self.sample_selector.currentData()
+
+            # If we have a valid index, use that sample's features
+            if current_idx is not None and current_idx in self.app_data["all_samples_features"]:
+                features = self.app_data["all_samples_features"][current_idx]['features']
+            else:
+                # Fallback to the first sample
+                features = self.app_data["features"]
+        else:
+            # Just use the default features (first sample)
+            features = self.app_data["features"]
+
         selected_category = self.category_combo.currentText()
 
         # Filter features by category
@@ -214,35 +412,19 @@ class FeatureEngineeringTab(QWidget):
             category_prefix = selected_category.lower().split()[0]
             filtered_features = {k: v for k, v in features.items() if k.startswith(category_prefix)}
 
-        # Update feature table
+        # Update feature table - simplified to only show feature names
         self.feature_table.setRowCount(len(filtered_features))
 
-        for i, (key, value) in enumerate(filtered_features.items()):
-            # Split the key to get category and feature name
-            parts = key.split('_', 1)
-            category = parts[0]
-            feature_name = parts[1] if len(parts) > 1 else key
+        # Sort features by name for better readability
+        sorted_features = sorted(filtered_features.items())
 
-            # Format category name for display
-            display_category = category.capitalize()
-
-            # Get feature description
-            description = VOLTAMMETRIC_FEATURE_DESCRIPTIONS.get(key, "")
-
-            # Add items to table
-            self.feature_table.setItem(i, 0, QTableWidgetItem(display_category))
-            self.feature_table.setItem(i, 1, QTableWidgetItem(feature_name))
-
-            # Format value based on its magnitude
-            if abs(value) < 0.001 or abs(value) > 1000:
-                formatted_value = f"{value:.2e}"
-            else:
-                formatted_value = f"{value:.6f}"
-
-            self.feature_table.setItem(i, 2, QTableWidgetItem(formatted_value))
-            self.feature_table.setItem(i, 3, QTableWidgetItem(description))
+        for i, (key, _) in enumerate(sorted_features):
+            # Add feature name to table (just the key)
+            self.feature_table.setItem(i, 0, QTableWidgetItem(key))
 
             # Color-code rows by category
+            category = key.split('_')[0] if '_' in key else key
+
             if category == "basic":
                 color = "#e3f2fd"  # Light blue
             elif category == "peak":
@@ -263,6 +445,11 @@ class FeatureEngineeringTab(QWidget):
 
         # Resize rows to content
         self.feature_table.resizeRowsToContents()
+
+    def on_sample_changed(self, _):
+        """Handle when the user selects a different sample"""
+        # Update the feature display with the newly selected sample
+        self.update_feature_display()
 
     def save_features(self):
         """Save extracted features to the experiment"""

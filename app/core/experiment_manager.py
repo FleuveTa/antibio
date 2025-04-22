@@ -98,30 +98,44 @@ class ExperimentManager:
     def _migrate_database(self):
         """Check if we need to migrate from old schema to new schema"""
         try:
-            # Check if label_file_path column exists
+            # Check experiments table columns
             self.cursor.execute("PRAGMA table_info(experiments)")
-            columns = [column[1] for column in self.cursor.fetchall()]
+            exp_columns = [column[1] for column in self.cursor.fetchall()]
 
             # Check if we need to add label_column
-            if 'label_column' not in columns:
-                print("Adding label_column to database schema...")
+            if 'label_column' not in exp_columns:
+                print("Adding label_column to experiments table...")
                 self.cursor.execute("ALTER TABLE experiments ADD COLUMN label_column TEXT")
                 self.conn.commit()
-                print("Added label_column to database schema.")
+                print("Added label_column to experiments table.")
 
             # Check if we need to add status column
-            if 'status' not in columns:
-                print("Adding status column to database schema...")
+            if 'status' not in exp_columns:
+                print("Adding status column to experiments table...")
                 self.cursor.execute("ALTER TABLE experiments ADD COLUMN status TEXT DEFAULT 'active'")
                 self.conn.commit()
-                print("Added status column to database schema.")
+                print("Added status column to experiments table.")
 
             # If we have both old and new columns, migrate data
-            if 'label_file_path' in columns and 'label_column' in columns:
+            if 'label_file_path' in exp_columns and 'label_column' in exp_columns:
                 print("Migrating data from label_file_path to label_column...")
                 self.cursor.execute("UPDATE experiments SET label_column = NULL WHERE label_column IS NULL")
                 self.conn.commit()
                 print("Data migration completed.")
+
+            # Check preprocessing_steps table columns
+            # First check if the table exists
+            self.cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='preprocessing_steps'")
+            if self.cursor.fetchone():
+                self.cursor.execute("PRAGMA table_info(preprocessing_steps)")
+                preproc_columns = [column[1] for column in self.cursor.fetchall()]
+
+                # Check if transformer_path column exists
+                if 'transformer_path' not in preproc_columns:
+                    print("Adding transformer_path column to preprocessing_steps table...")
+                    self.cursor.execute("ALTER TABLE preprocessing_steps ADD COLUMN transformer_path TEXT")
+                    self.conn.commit()
+                    print("Added transformer_path column to preprocessing_steps table.")
 
         except Exception as e:
             print(f"Error during database migration: {e}")
@@ -243,82 +257,164 @@ class ExperimentManager:
 
     def get_experiment(self, experiment_id):
         """Get experiment information"""
-        self.cursor.execute('''
-        SELECT * FROM experiments WHERE id = ?
-        ''', (experiment_id,))
+        try:
+            # Debug information
+            print(f"Getting experiment with ID: {experiment_id}")
 
-        experiment = self.cursor.fetchone()
-        if experiment:
-            # Check if we're using the new schema or old schema
-            columns = [column[0] for column in self.cursor.description]
-            result = {
-                'id': experiment[0],
-                'name': experiment[1],
-                'date': experiment[2],
-                'description': experiment[3],
-                'file_path': experiment[4],
-            }
-
-            # Add remaining fields based on schema
-            if 'label_column' in columns:
-                label_column_index = columns.index('label_column')
-                result['label_column'] = experiment[label_column_index]
-            elif 'label_file_path' in columns:
-                label_file_path_index = columns.index('label_file_path')
-                result['label_file_path'] = experiment[label_file_path_index]
-
-            # Add parameters
-            parameters_index = columns.index('parameters')
-            result['parameters'] = json.loads(experiment[parameters_index]) if experiment[parameters_index] else None
-
-            # Add status if available
-            if 'status' in columns:
-                status_index = columns.index('status')
-                result['status'] = experiment[status_index]
-
-            # Add created_at
-            created_at_index = columns.index('created_at')
-            result['created_at'] = experiment[created_at_index]
-
-            return result
-        return None
-
-    def list_experiments(self, active_only=True):
-        """List all experiments"""
-        # Check if status column exists
-        self.cursor.execute("PRAGMA table_info(experiments)")
-        columns = [column[1] for column in self.cursor.fetchall()]
-        has_status_column = 'status' in columns
-
-        if has_status_column and active_only:
             self.cursor.execute('''
-            SELECT id, name, date, description, status FROM experiments
-            WHERE status = 'active' ORDER BY date DESC
-            ''')
-        else:
-            # If no status column or we want all experiments
-            self.cursor.execute('''
-            SELECT id, name, date, description FROM experiments ORDER BY date DESC
-            ''')
+            SELECT * FROM experiments WHERE id = ?
+            ''', (experiment_id,))
 
-        experiments = []
-        for row in self.cursor.fetchall():
-            exp = {
-                'id': row[0],
-                'name': row[1],
-                'date': row[2],
-                'description': row[3],
-            }
+            experiment = self.cursor.fetchone()
+            if experiment:
+                # Check if we're using the new schema or old schema
+                columns = [column[0] for column in self.cursor.description]
+                print(f"Database columns: {columns}")
+                print(f"Experiment data: {experiment}")
 
-            # Add status if available
-            if has_status_column and len(row) > 4:
-                exp['status'] = row[4]
+                # Create result dictionary safely
+                result = {'id': experiment[0]}
+
+                # Add basic fields with error handling
+                try:
+                    result['name'] = experiment[1] if experiment[1] is not None else "Unnamed Experiment"
+                except (IndexError, TypeError) as e:
+                    print(f"Error getting name: {e}")
+                    result['name'] = "Unnamed Experiment"
+
+                try:
+                    result['date'] = experiment[2] if experiment[2] is not None else "Unknown Date"
+                except (IndexError, TypeError) as e:
+                    print(f"Error getting date: {e}")
+                    result['date'] = "Unknown Date"
+
+                try:
+                    result['description'] = experiment[3] if experiment[3] is not None else ""
+                except (IndexError, TypeError) as e:
+                    print(f"Error getting description: {e}")
+                    result['description'] = ""
+
+                try:
+                    result['file_path'] = experiment[4] if experiment[4] is not None else ""
+                except (IndexError, TypeError) as e:
+                    print(f"Error getting file_path: {e}")
+                    result['file_path'] = ""
+
+                # Add remaining fields based on schema
+                if 'label_column' in columns:
+                    try:
+                        label_column_index = columns.index('label_column')
+                        result['label_column'] = experiment[label_column_index]
+                    except (IndexError, TypeError) as e:
+                        print(f"Error getting label_column: {e}")
+                        result['label_column'] = None
+                elif 'label_file_path' in columns:
+                    try:
+                        label_file_path_index = columns.index('label_file_path')
+                        result['label_file_path'] = experiment[label_file_path_index]
+                    except (IndexError, TypeError) as e:
+                        print(f"Error getting label_file_path: {e}")
+                        result['label_file_path'] = None
+
+                # Add parameters
+                try:
+                    parameters_index = columns.index('parameters')
+                    if experiment[parameters_index] and isinstance(experiment[parameters_index], str):
+                        try:
+                            result['parameters'] = json.loads(experiment[parameters_index])
+                        except json.JSONDecodeError as e:
+                            print(f"Error parsing parameters JSON: {e}")
+                            result['parameters'] = None
+                    else:
+                        result['parameters'] = None
+                except (IndexError, ValueError) as e:
+                    print(f"Error getting parameters: {e}")
+                    result['parameters'] = None
+
+                # Add status if available
+                if 'status' in columns:
+                    try:
+                        status_index = columns.index('status')
+                        result['status'] = experiment[status_index]
+                    except (IndexError, TypeError) as e:
+                        print(f"Error getting status: {e}")
+                        result['status'] = 'active'  # Default status
+
+                # Add created_at if available
+                if 'created_at' in columns:
+                    try:
+                        created_at_index = columns.index('created_at')
+                        result['created_at'] = experiment[created_at_index] if experiment[created_at_index] else result['date']
+                    except (IndexError, TypeError) as e:
+                        print(f"Error getting created_at: {e}")
+                        result['created_at'] = result['date']  # Use date as fallback
+
+                print(f"Returning experiment data: {result}")
+                return result
             else:
-                exp['status'] = 'active'  # Default status
+                print(f"No experiment found with ID: {experiment_id}")
+                return None
+        except Exception as e:
+            print(f"Error in get_experiment: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
 
-            experiments.append(exp)
+    def list_experiments(self, active_only=False):  # Changed default to False to show all experiments
+        """List all experiments"""
+        try:
+            # Debug: Print database path
+            print(f"Database path: {self.db_path}")
 
-        return experiments
+            # Check if status column exists
+            self.cursor.execute("PRAGMA table_info(experiments)")
+            columns = [column[1] for column in self.cursor.fetchall()]
+            has_status_column = 'status' in columns
+
+            print(f"Database columns: {columns}")
+            print(f"Has status column: {has_status_column}")
+
+            # CRITICAL FIX: Use a simpler query that works regardless of schema
+            self.cursor.execute('SELECT * FROM experiments ORDER BY date DESC')
+            rows = self.cursor.fetchall()
+            print(f"Found {len(rows)} experiments in database")
+
+            # Get column names for mapping
+            column_names = [column[0] for column in self.cursor.description]
+            print(f"Column names: {column_names}")
+
+            experiments = []
+            for row in rows:
+                # Create a dictionary mapping column names to values
+                exp_dict = {column_names[i]: row[i] for i in range(len(column_names))}
+
+                # Create a standardized experiment dictionary
+                exp = {
+                    'id': exp_dict['id'],
+                    'name': exp_dict['name'],
+                    'date': exp_dict['date'],
+                    'description': exp_dict.get('description', ''),
+                }
+
+                # Add status if available
+                if 'status' in exp_dict:
+                    exp['status'] = exp_dict['status']
+                else:
+                    exp['status'] = 'active'  # Default status
+
+                # Only filter by status if active_only is True and we have status
+                if active_only and exp.get('status') != 'active':
+                    continue
+
+                experiments.append(exp)
+                print(f"Added experiment: {exp['name']} (ID: {exp['id']})")
+
+            return experiments
+        except Exception as e:
+            print(f"Error in list_experiments: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return []
 
     def save_model(self, experiment_id, model, model_type, metrics=None):
         """Save a trained model"""
@@ -604,23 +700,47 @@ class ExperimentManager:
 
             # Clean up associated files
             if experiment:
+                # Get the file path from the experiment
+                file_path = experiment[0]
+                if file_path and os.path.exists(file_path):
+                    # Get the raw directory containing the experiment data
+                    raw_dir = os.path.dirname(file_path)
+                    if os.path.exists(raw_dir) and raw_dir.startswith(str(self.base_dir / "raw")):
+                        print(f"Deleting raw data directory: {raw_dir}")
+                        import shutil
+                        shutil.rmtree(raw_dir)
+                    else:
+                        # If we can't delete the whole directory, at least delete the file
+                        print(f"Deleting raw data file: {file_path}")
+                        os.remove(file_path)
+
                 # Delete processed data directory
                 processed_dir = self.base_dir / "processed" / f"experiment_{experiment_id}"
                 if processed_dir.exists():
+                    print(f"Deleting processed data directory: {processed_dir}")
                     import shutil
                     shutil.rmtree(processed_dir)
 
                 # Delete features directory
                 features_dir = self.base_dir / "features" / f"experiment_{experiment_id}"
                 if features_dir.exists():
+                    print(f"Deleting features directory: {features_dir}")
                     import shutil
                     shutil.rmtree(features_dir)
 
                 # Delete transformers directory
                 transformers_dir = self.base_dir / "transformers" / f"experiment_{experiment_id}"
                 if transformers_dir.exists():
+                    print(f"Deleting transformers directory: {transformers_dir}")
                     import shutil
                     shutil.rmtree(transformers_dir)
+
+                # Delete models directory
+                models_dir = self.base_dir / "models" / f"experiment_{experiment_id}"
+                if models_dir.exists():
+                    print(f"Deleting models directory: {models_dir}")
+                    import shutil
+                    shutil.rmtree(models_dir)
 
             return True
         except Exception as e:

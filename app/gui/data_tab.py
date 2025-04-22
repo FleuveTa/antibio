@@ -8,8 +8,10 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from datetime import datetime
+import re
 
-from app.core.data_loader import load_data, preprocess_data
+from app.core.data_loader import load_data
+from app.core.preprocessing import preprocess_data, apply_transformers
 from app.core.experiment_manager import ExperimentManager
 from app.gui.db_viewer import DatabaseViewer
 
@@ -433,22 +435,43 @@ class DataImportTab(QWidget):
         try:
             # Get experiment details
             experiment = self.experiment_manager.get_experiment(experiment_id)
-            if experiment:
-                # Display experiment info
-                self.exp_name.setText(experiment['name'])
-                self.exp_desc.setText(experiment.get('description', ''))
-                self.file_path.setText(experiment['file_path'])
+            print(f"Experiment data in experiment_selected: {experiment}")
 
-                # Format and display the creation date
-                if 'created_at' in experiment:
-                    self.exp_date.setText(experiment['created_at'])
-                    self.exp_date.setVisible(True)
+            if experiment:
+                # Display experiment info with safe access
+                try:
+                    # Use get() method with default values for safe access
+                    name = experiment.get('name', 'Unnamed Experiment')
+                    description = experiment.get('description', '')
+                    file_path = experiment.get('file_path', '')
+                    created_at = experiment.get('created_at', '')
+
+                    print(f"Setting UI elements - Name: {name}, Desc: {description}, Path: {file_path}")
+
+                    # Set UI elements
+                    self.exp_name.setText(name)
+                    self.exp_desc.setText(description)
+                    self.file_path.setText(file_path)
+
+                    # Format and display the creation date
+                    if created_at:
+                        self.exp_date.setText(created_at)
+                        self.exp_date.setVisible(True)
+                    else:
+                        self.exp_date.setVisible(False)
+                except Exception as ui_error:
+                    print(f"Error setting UI elements: {ui_error}")
+                    # Continue with the rest of the function even if UI update fails
 
                 # Get preprocessing steps for this experiment
-                preprocessing_steps = self.experiment_manager.get_preprocessing_steps(experiment_id)
-                if preprocessing_steps:
-                    steps_text = ", ".join([step["name"] for step in preprocessing_steps])
-                    self.exp_desc.append(f"\n\nPreprocessing: {steps_text}")
+                try:
+                    preprocessing_steps = self.experiment_manager.get_preprocessing_steps(experiment_id)
+                    if preprocessing_steps:
+                        steps_text = ", ".join([step.get("name", "Unknown") for step in preprocessing_steps])
+                        self.exp_desc.append(f"\n\nPreprocessing: {steps_text}")
+                except Exception as steps_error:
+                    print(f"Error getting preprocessing steps: {steps_error}")
+                    preprocessing_steps = []
 
                 # Store experiment ID
                 self.current_experiment_id = experiment_id
@@ -460,7 +483,12 @@ class DataImportTab(QWidget):
 
                 # Enable the delete button
                 self.delete_btn.setEnabled(True)
+            else:
+                print(f"No experiment data returned for ID: {experiment_id}")
         except Exception as e:
+            print(f"Exception in experiment_selected: {e}")
+            import traceback
+            traceback.print_exc()
             QMessageBox.critical(self, "Error", f"Error loading experiment details: {str(e)}")
 
     def import_data(self):
@@ -574,11 +602,39 @@ class DataImportTab(QWidget):
 
     def transform_voltammetry_data(self, df):
         """Transform voltammetry data from wide format (voltages as columns) to long format (Potential and Current columns)"""
-        # Check if column headers can be converted to float or represent voltage values
+        # Identify voltage columns and metadata columns
         voltage_columns = []
+        metadata_columns = []
         voltage_values = {}  # Dictionary to store the actual voltage value for each column
 
+        # First, filter out columns that should be skipped
+        columns_to_skip = ['path']
+
+        # Skip unnamed columns and columns with strange formats
         for col in df.columns:
+            if 'unnamed' in str(col).lower() or 'unnamed:' in str(col).lower():
+                columns_to_skip.append(col)
+                print(f"Skipping unnamed column: {col}")
+            # Skip columns with strange scientific notation formats that aren't valid voltages
+            elif isinstance(col, str) and re.match(r'^-?\d+e[-+]\d+\.\d+', str(col)):
+                columns_to_skip.append(col)
+                print(f"Skipping column with strange format: {col}")
+
+        # First identify important metadata columns
+        important_metadata = ['concentration', 'antibiotic', 'label', 'class', 'target']
+        for col in df.columns:
+            if col in columns_to_skip:
+                continue
+
+            if str(col).lower() in [meta.lower() for meta in important_metadata]:
+                metadata_columns.append(col)
+                print(f"Found important metadata column: {col}")
+
+        # Then identify voltage columns
+        for col in df.columns:
+            if col in metadata_columns or col in columns_to_skip:
+                continue  # Skip metadata columns and columns to skip
+
             try:
                 # Try to convert to float directly
                 try:
@@ -598,14 +654,22 @@ class DataImportTab(QWidget):
                                 voltage_columns.append(col)
                                 voltage_values[col] = voltage_value
                             except ValueError:
-                                pass
+                                # Not a voltage column, might be metadata
+                                if col not in columns_to_skip and col not in metadata_columns:
+                                    metadata_columns.append(col)
+                    elif col not in columns_to_skip and col not in metadata_columns:
+                        # Not a voltage column, might be metadata
+                        metadata_columns.append(col)
             except (TypeError):
-                pass
+                # Not a voltage column, might be metadata
+                if col not in columns_to_skip and col not in metadata_columns:
+                    metadata_columns.append(col)
 
         if len(voltage_columns) == 0:
             raise ValueError("No voltage columns found in the data")
 
-        print(f"Found {len(voltage_columns)} voltage columns")
+        print(f"Found {len(voltage_columns)} voltage columns and {len(metadata_columns)} metadata columns")
+        print(f"Metadata columns: {metadata_columns}")
 
         # Create a new dataframe with Potential and Current columns
         new_data = []
@@ -624,11 +688,20 @@ class DataImportTab(QWidget):
                     if pd.notna(current_value):  # Skip NaN values
                         # Use the parsed voltage value from our dictionary
                         potential_value = voltage_values[voltage_col]
-                        row_data.append({
+
+                        # Create a data point with potential, current, and row index
+                        data_point = {
                             'Potential': potential_value,
                             'Current': float(current_value),
                             'RowIndex': idx  # Store the original row index
-                        })
+                        }
+
+                        # Add metadata values if available
+                        for meta_col in metadata_columns:
+                            if meta_col in row.index:
+                                data_point[meta_col] = row[meta_col]
+
+                        row_data.append(data_point)
                 except (ValueError, TypeError) as e:
                     print(f"Error converting value at row {idx}, column {voltage_col}: {e}")
                     # Skip cells that can't be converted to float
@@ -651,6 +724,9 @@ class DataImportTab(QWidget):
         self.app_data["voltammetry_row_indices"] = row_indices
         print(f"Found {len(row_indices)} voltammetry scans (rows)")
 
+        # Store metadata columns for future use
+        self.app_data["metadata_columns"] = metadata_columns
+
         return new_df
 
     def load_existing_experiment(self):
@@ -665,8 +741,10 @@ class DataImportTab(QWidget):
             if not experiment:
                 raise ValueError(f"Experiment with ID {self.current_experiment_id} not found")
 
-            # Load the data file
-            file_path = experiment['file_path']
+            # Load the data file - use get() for safe access
+            file_path = experiment.get('file_path', '')
+            if not file_path:
+                raise ValueError(f"No file path found for experiment with ID {self.current_experiment_id}")
             raw_df = load_data(file_path)
 
             # Check if this is an old experiment format (without RowIndex)
@@ -718,7 +796,9 @@ class DataImportTab(QWidget):
             # Signal that data is loaded and ready for preprocessing
             self.data_loaded.emit(True)
 
-            QMessageBox.information(self, "Success", f"Loaded experiment: {experiment['name']}")
+            # Use get() for safe access to name
+            experiment_name = experiment.get('name', 'Unnamed Experiment')
+            QMessageBox.information(self, "Success", f"Loaded experiment: {experiment_name}")
 
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Error loading experiment: {str(e)}")
@@ -824,7 +904,12 @@ class DataImportTab(QWidget):
                 spine.set_color('#cccccc')
 
             # Tight layout for better spacing
-            self.figure.tight_layout()
+            try:
+                self.figure.tight_layout()
+            except Exception as e:
+                print(f"Warning: Could not apply tight_layout: {e}")
+                # Set a minimum figure size to avoid singular matrix error
+                self.figure.set_size_inches(6, 4)
 
             # Add data cursor for interactive data exploration
             from matplotlib.widgets import Cursor
@@ -1001,6 +1086,7 @@ class DataImportTab(QWidget):
             "Confirm Deletion",
             f"Are you sure you want to delete the experiment '{experiment['name']}'?\n\n"
             f"This will permanently delete all associated data, including:\n"
+            f"- Raw data files\n"
             f"- Preprocessed data\n"
             f"- Extracted features\n"
             f"- Trained models\n\n"

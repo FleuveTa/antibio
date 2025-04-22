@@ -1,564 +1,531 @@
-from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
-                             QPushButton, QComboBox, QGroupBox, QGridLayout,
-                             QSpinBox, QDoubleSpinBox, QCheckBox, QTabWidget,
-                             QTableWidget, QTableWidgetItem, QSlider, QSplitter,
-                             QTextEdit, QFileDialog)
+from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
+                             QPushButton, QGroupBox, QGridLayout,
+                             QCheckBox, QTabWidget,
+                             QTableWidget, QTableWidgetItem, QSplitter,
+                             QTextEdit, QFileDialog, QMessageBox)
 from PyQt5.QtCore import Qt, pyqtSignal
-import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
 from matplotlib.figure import Figure
-import json
+from sklearn.metrics import confusion_matrix as sk_confusion_matrix
+from sklearn.metrics import r2_score, mean_squared_error
+from datetime import datetime
+from collections import Counter
 
 
 class ResultsVisualizationTab(QWidget):
     report_ready = pyqtSignal(bool)
-    
+
     def __init__(self, app_data):
         super().__init__()
         self.app_data = app_data
         self.init_ui()
-    
+
     def init_ui(self):
         layout = QVBoxLayout()
-        
+
         # Create a splitter for resizable sections
         splitter = QSplitter(Qt.Vertical)
-        
+
         # Model Evaluation Section
         eval_group = QGroupBox("Model Evaluation")
         eval_layout = QVBoxLayout()
-        
+
         # Create tabs for different visualizations
         eval_tabs = QTabWidget()
-        
-        # Calibration tab
-        calibration_tab = QWidget()
-        calibration_layout = QVBoxLayout(calibration_tab)
-        
-        calibration_options = QHBoxLayout()
-        calibration_options.addWidget(QLabel("Antibiotic:"))
-        self.antibiotic_combo = QComboBox()
-        self.antibiotic_combo.addItems(["Tetracycline", "Penicillin", "Streptomycin", "Chloramphenicol"])
-        self.antibiotic_combo.currentIndexChanged.connect(lambda: self.update_calibration_plot())
-        calibration_options.addWidget(self.antibiotic_combo)
-        
-        calibration_options.addWidget(QLabel("Concentration Range:"))
-        self.conc_min_spin = QDoubleSpinBox()
-        self.conc_min_spin.setRange(0, 1000)
-        self.conc_min_spin.setValue(0)
-        self.conc_min_spin.setSuffix(" ppb")
-        calibration_options.addWidget(self.conc_min_spin)
-        
-        self.conc_max_spin = QDoubleSpinBox()
-        self.conc_max_spin.setRange(1, 10000)
-        self.conc_max_spin.setValue(1000)
-        self.conc_max_spin.setSuffix(" ppb")
-        calibration_options.addWidget(self.conc_max_spin)
-        
-        self.generate_calibration_btn = QPushButton("Generate Calibration")
-        self.generate_calibration_btn.clicked.connect(self.update_calibration_plot)
-        calibration_options.addWidget(self.generate_calibration_btn)
-        
-        calibration_layout.addLayout(calibration_options)
-        
-        # Calibration plot
-        self.calibration_figure = Figure(figsize=(8, 6), dpi=100)
-        self.calibration_canvas = FigureCanvas(self.calibration_figure)
-        calibration_layout.addWidget(self.calibration_canvas)
-        
-        # Add calibration information section
-        calibration_info = QGroupBox("Calibration Information")
-        cal_info_layout = QGridLayout()
-        
-        cal_info_layout.addWidget(QLabel("Equation:"), 0, 0)
-        self.equation_label = QLabel("y = mx + b")
-        cal_info_layout.addWidget(self.equation_label, 0, 1)
-        
-        cal_info_layout.addWidget(QLabel("R² Value:"), 1, 0)
-        self.r2_label = QLabel("0.0000")
-        cal_info_layout.addWidget(self.r2_label, 1, 1)
-        
-        cal_info_layout.addWidget(QLabel("Limit of Detection:"), 2, 0)
-        self.lod_label = QLabel("0.0 ppb")
-        cal_info_layout.addWidget(self.lod_label, 2, 1)
-        
-        cal_info_layout.addWidget(QLabel("Limit of Quantification:"), 3, 0)
-        self.loq_label = QLabel("0.0 ppb")
-        cal_info_layout.addWidget(self.loq_label, 3, 1)
-        
-        cal_info_layout.addWidget(QLabel("Linear Range:"), 4, 0)
-        self.range_label = QLabel("0.0 - 0.0 ppb")
-        cal_info_layout.addWidget(self.range_label, 4, 1)
-        
-        calibration_info.setLayout(cal_info_layout)
-        calibration_layout.addWidget(calibration_info)
-        
-        eval_tabs.addTab(calibration_tab, "Calibration Curve")
-        
-        # Prediction tab
+
+        # Model Summary tab
+        summary_tab = QWidget()
+        summary_layout = QVBoxLayout(summary_tab)
+
+        # Model information section
+        model_info = QGroupBox("Model Information")
+        model_info_layout = QGridLayout()
+
+        model_info_layout.addWidget(QLabel("Model Type:"), 0, 0)
+        self.model_type_label = QLabel("Not available")
+        model_info_layout.addWidget(self.model_type_label, 0, 1)
+
+        model_info_layout.addWidget(QLabel("Task Type:"), 1, 0)
+        self.task_type_label = QLabel("Not available")
+        model_info_layout.addWidget(self.task_type_label, 1, 1)
+
+        model_info_layout.addWidget(QLabel("Target Variable:"), 2, 0)
+        self.target_label = QLabel("Not available")
+        model_info_layout.addWidget(self.target_label, 2, 1)
+
+        model_info_layout.addWidget(QLabel("Test Size:"), 3, 0)
+        self.test_size_label = QLabel("Not available")
+        model_info_layout.addWidget(self.test_size_label, 3, 1)
+
+        model_info.setLayout(model_info_layout)
+        summary_layout.addWidget(model_info)
+
+        # Metrics section
+        metrics_info = QGroupBox("Performance Metrics")
+        metrics_layout = QVBoxLayout()
+
+        self.metrics_table = QTableWidget()
+        self.metrics_table.setColumnCount(2)
+        self.metrics_table.setHorizontalHeaderLabels(["Metric", "Value"])
+        self.metrics_table.horizontalHeader().setStretchLastSection(True)
+        metrics_layout.addWidget(self.metrics_table)
+
+        metrics_info.setLayout(metrics_layout)
+        summary_layout.addWidget(metrics_info)
+
+        eval_tabs.addTab(summary_tab, "Model Summary")
+
+        # Prediction Results tab
         prediction_tab = QWidget()
         prediction_layout = QVBoxLayout(prediction_tab)
-        
-        # Sample selection
-        sample_layout = QHBoxLayout()
-        sample_layout.addWidget(QLabel("Test Sample:"))
-        self.sample_combo = QComboBox()
-        self.sample_combo.addItems(["Sample 1", "Sample 2", "Sample 3", "Sample 4"])
-        self.sample_combo.currentIndexChanged.connect(lambda: self.update_prediction_plot())
-        sample_layout.addWidget(self.sample_combo)
-        
-        self.predict_btn = QPushButton("Predict Concentration")
-        self.predict_btn.clicked.connect(self.update_prediction_plot)
-        sample_layout.addWidget(self.predict_btn)
-        
-        prediction_layout.addLayout(sample_layout)
-        
-        # Prediction results visualization
+
+        # Prediction visualization
         self.prediction_figure = Figure(figsize=(8, 6), dpi=100)
         self.prediction_canvas = FigureCanvas(self.prediction_figure)
+
+        # Add navigation toolbar for zoom/pan functionality
+        self.prediction_toolbar = NavigationToolbar(self.prediction_canvas, self)
+
+        prediction_layout.addWidget(self.prediction_toolbar)
         prediction_layout.addWidget(self.prediction_canvas)
-        
-        # Prediction results table
-        self.prediction_table = QTableWidget(4, 3)
-        self.prediction_table.setHorizontalHeaderLabels(["Antibiotic", "Predicted Conc.", "Actual Conc."])
-        self.prediction_table.horizontalHeader().setStretchLastSection(True)
-        prediction_layout.addWidget(self.prediction_table)
-        
-        eval_tabs.addTab(prediction_tab, "Prediction Analysis")
-        
-        # Parameter Optimization tab
-        param_tab = QWidget()
-        param_layout = QVBoxLayout(param_tab)
-        
-        # Parameter selection
-        param_control_layout = QHBoxLayout()
-        param_control_layout.addWidget(QLabel("Parameter:"))
-        self.param_combo = QComboBox()
-        self.param_combo.addItems([
-            "pH", "Temperature", "Scan Rate", "Deposition Time", 
-            "Amplitude", "Frequency", "Step Potential"
-        ])
-        self.param_combo.currentIndexChanged.connect(lambda: self.update_param_plot())
-        param_control_layout.addWidget(self.param_combo)
-        
-        self.optimize_btn = QPushButton("Optimize Parameter")
-        self.optimize_btn.clicked.connect(self.update_param_plot)
-        param_control_layout.addWidget(self.optimize_btn)
-        
-        param_layout.addLayout(param_control_layout)
-        
-        # Parameter optimization plot
-        self.param_figure = Figure(figsize=(8, 6), dpi=100)
-        self.param_canvas = FigureCanvas(self.param_figure)
-        param_layout.addWidget(self.param_canvas)
-        
-        # Optimal parameters table
-        self.param_table = QTableWidget(7, 2)
-        self.param_table.setHorizontalHeaderLabels(["Parameter", "Optimal Value"])
-        for i, param in enumerate([
-            "pH", "Temperature", "Scan Rate", "Deposition Time", 
-            "Amplitude", "Frequency", "Step Potential"
-        ]):
-            self.param_table.setItem(i, 0, QTableWidgetItem(param))
-            self.param_table.setItem(i, 1, QTableWidgetItem("--"))
-        
-        self.param_table.horizontalHeader().setStretchLastSection(True)
-        param_layout.addWidget(self.param_table)
-        
-        eval_tabs.addTab(param_tab, "Parameter Optimization")
-        
+
+        eval_tabs.addTab(prediction_tab, "Prediction Results")
+
+        # Feature Importance tab
+        feature_tab = QWidget()
+        feature_layout = QVBoxLayout(feature_tab)
+
+        # Feature importance visualization
+        self.feature_figure = Figure(figsize=(8, 6), dpi=100)
+        self.feature_canvas = FigureCanvas(self.feature_figure)
+
+        # Add navigation toolbar for zoom/pan functionality
+        self.feature_toolbar = NavigationToolbar(self.feature_canvas, self)
+
+        feature_layout.addWidget(self.feature_toolbar)
+        feature_layout.addWidget(self.feature_canvas)
+
+        eval_tabs.addTab(feature_tab, "Feature Importance")
+
+        # Confusion Matrix tab (for classification)
+        confusion_tab = QWidget()
+        confusion_layout = QVBoxLayout(confusion_tab)
+
+        # Confusion matrix visualization
+        self.confusion_figure = Figure(figsize=(8, 6), dpi=100)
+        self.confusion_canvas = FigureCanvas(self.confusion_figure)
+
+        # Add navigation toolbar for zoom/pan functionality
+        self.confusion_toolbar = NavigationToolbar(self.confusion_canvas, self)
+
+        confusion_layout.addWidget(self.confusion_toolbar)
+        confusion_layout.addWidget(self.confusion_canvas)
+
+        eval_tabs.addTab(confusion_tab, "Confusion Matrix")
+
         eval_layout.addWidget(eval_tabs)
         eval_group.setLayout(eval_layout)
         splitter.addWidget(eval_group)
-        
+
         # Report Generation Section
         report_group = QGroupBox("Report Generation")
         report_layout = QVBoxLayout()
-        
+
         # Report options
         options_layout = QGridLayout()
-        
-        self.include_calib_check = QCheckBox("Include Calibration Curves")
-        self.include_calib_check.setChecked(True)
-        options_layout.addWidget(self.include_calib_check, 0, 0)
-        
+
+        self.include_summary_check = QCheckBox("Include Model Summary")
+        self.include_summary_check.setChecked(True)
+        options_layout.addWidget(self.include_summary_check, 0, 0)
+
         self.include_pred_check = QCheckBox("Include Prediction Results")
         self.include_pred_check.setChecked(True)
         options_layout.addWidget(self.include_pred_check, 0, 1)
-        
-        self.include_param_check = QCheckBox("Include Parameter Optimization")
-        self.include_param_check.setChecked(True)
-        options_layout.addWidget(self.include_param_check, 1, 0)
-        
-        self.include_model_check = QCheckBox("Include Model Details")
-        self.include_model_check.setChecked(True)
-        options_layout.addWidget(self.include_model_check, 1, 1)
-        
+
+        self.include_feature_check = QCheckBox("Include Feature Importance")
+        self.include_feature_check.setChecked(True)
+        options_layout.addWidget(self.include_feature_check, 1, 0)
+
+        self.include_cm_check = QCheckBox("Include Confusion Matrix")
+        self.include_cm_check.setChecked(True)
+        options_layout.addWidget(self.include_cm_check, 1, 1)
+
         report_layout.addLayout(options_layout)
-        
+
         # Report preview
         report_layout.addWidget(QLabel("Report Preview:"))
         self.report_preview = QTextEdit()
         self.report_preview.setReadOnly(True)
         self.report_preview.setMinimumHeight(150)
         report_layout.addWidget(self.report_preview)
-        
+
         # Generate and export buttons
         buttons_layout = QHBoxLayout()
-        
+
         self.preview_btn = QPushButton("Generate Preview")
         self.preview_btn.clicked.connect(self.generate_report_preview)
         buttons_layout.addWidget(self.preview_btn)
-        
+
         self.export_btn = QPushButton("Export Report")
         self.export_btn.clicked.connect(self.export_report)
         buttons_layout.addWidget(self.export_btn)
-        
+
         report_layout.addLayout(buttons_layout)
-        
+
         report_group.setLayout(report_layout)
         splitter.addWidget(report_group)
-        
+
         layout.addWidget(splitter)
         self.setLayout(layout)
-    
-    def update_calibration_plot(self):
-        """Update the calibration curve plot"""
-        self.calibration_figure.clear()
-        ax = self.calibration_figure.add_subplot(111)
-        
-        # Get selected antibiotic
-        antibiotic = self.antibiotic_combo.currentText()
-        
-        # Get concentration range
-        min_conc = self.conc_min_spin.value()
-        max_conc = self.conc_max_spin.value()
-        
-        # Create mock calibration data
-        np.random.seed(42)  # For reproducibility
-        concentrations = np.linspace(min_conc, max_conc, 10)
-        
-        # Different slope for each antibiotic (just for demo)
-        slopes = {
-            "Tetracycline": 0.015,
-            "Penicillin": 0.008,
-            "Streptomycin": 0.012,
-            "Chloramphenicol": 0.02
-        }
-        
-        slope = slopes.get(antibiotic, 0.01)
-        intercept = 0.05
-        
-        # Generate responses with some noise
-        responses = slope * concentrations + intercept + np.random.normal(0, 0.02, 10)
-        
-        # Plot points
-        ax.scatter(concentrations, responses, color='blue', label='Measured Data')
-        
-        # Calculate and plot regression line
-        from sklearn.linear_model import LinearRegression
-        from sklearn.metrics import r2_score
-        
-        model = LinearRegression()
-        model.fit(concentrations.reshape(-1, 1), responses)
-        
-        pred_responses = model.predict(concentrations.reshape(-1, 1))
-        r2 = r2_score(responses, pred_responses)
-        
-        # Plot regression line
-        x_range = np.linspace(min_conc, max_conc, 100)
-        y_pred = model.predict(x_range.reshape(-1, 1))
-        
-        ax.plot(x_range, y_pred, color='red', label='Regression Line')
-        
-        # Calculate LOD and LOQ (simplified example)
-        # In real application, these would be calculated properly from blank measurements
-        blank_std = 0.005  # Standard deviation of blank
-        slope = model.coef_[0]
-        
-        lod = 3.3 * blank_std / slope
-        loq = 10 * blank_std / slope
-        
-        # Add LOD and LOQ lines
-        ax.axhline(y=intercept + 3.3 * blank_std, color='green', linestyle='--', label=f'LOD ({lod:.2f} ppb)')
-        ax.axhline(y=intercept + 10 * blank_std, color='orange', linestyle='--', label=f'LOQ ({loq:.2f} ppb)')
-        
-        # Set labels and title
-        ax.set_xlabel('Concentration (ppb)')
-        ax.set_ylabel('Response (current, μA)')
-        ax.set_title(f'Calibration Curve for {antibiotic}')
-        ax.legend()
-        ax.grid(True, linestyle='--', alpha=0.7)
-        
-        self.calibration_canvas.draw()
-        
-        # Update calibration information
-        self.equation_label.setText(f"y = {slope:.4f}x + {intercept:.4f}")
-        self.r2_label.setText(f"{r2:.4f}")
-        self.lod_label.setText(f"{lod:.2f} ppb")
-        self.loq_label.setText(f"{loq:.2f} ppb")
-        self.range_label.setText(f"{loq:.2f} - {max_conc:.2f} ppb")
-    
-    def update_prediction_plot(self):
-        """Update the prediction analysis plot"""
-        self.prediction_figure.clear()
-        ax = self.prediction_figure.add_subplot(111)
-        
-        # Get selected sample
-        sample = self.sample_combo.currentText()
-        
-        # Create mock prediction data for different antibiotics
-        antibiotics = ["Tetracycline", "Penicillin", "Streptomycin", "Chloramphenicol"]
-        
-        # Mock data - would be replaced with actual predictions
-        if sample == "Sample 1":
-            # Food sample with multiple antibiotics
-            prediction = [120, 0, 85, 15]
-            actual = [115, 0, 90, 18]
-        elif sample == "Sample 2":
-            # Clean sample
-            prediction = [0, 0, 0, 0]  
-            actual = [0, 0, 0, 0]
-        elif sample == "Sample 3":
-            # Single antibiotic
-            prediction = [0, 450, 0, 0]
-            actual = [0, 425, 0, 0]
-        else:
-            # Multiple antibiotics
-            prediction = [75, 30, 60, 0]
-            actual = [70, 35, 55, 0]
-            
-        # Plot bar chart
-        x = np.arange(len(antibiotics))
-        width = 0.35
-        
-        ax.bar(x - width/2, prediction, width, label='Predicted')
-        ax.bar(x + width/2, actual, width, label='Actual')
-        
-        ax.set_xticks(x)
-        ax.set_xticklabels(antibiotics)
-        ax.set_ylabel('Concentration (ppb)')
-        ax.set_title(f'Antibiotic Concentrations in {sample}')
-        ax.legend()
-        
-        # Add threshold line for regulatory limits
-        # MRLs vary by antibiotic and food type
-        mrl_values = [100, 50, 200, 10]  # Example MRLs
-        
-        for i, mrl in enumerate(mrl_values):
-            ax.plot([i-width, i+width], [mrl, mrl], 'r--', alpha=0.7)
-            ax.text(i, mrl + 5, f'MRL: {mrl}', ha='center', fontsize=8)
-        
-        self.prediction_canvas.draw()
-        
-        # Update prediction table
-        for i, antibiotic in enumerate(antibiotics):
-            self.prediction_table.setItem(i, 0, QTableWidgetItem(antibiotic))
-            self.prediction_table.setItem(i, 1, QTableWidgetItem(f"{prediction[i]:.1f} ppb"))
-            self.prediction_table.setItem(i, 2, QTableWidgetItem(f"{actual[i]:.1f} ppb"))
-            
-            # Highlight values exceeding MRL
-            if prediction[i] > mrl_values[i]:
-                self.prediction_table.item(i, 1).setBackground(Qt.red)
-            
-            if actual[i] > mrl_values[i]:
-                self.prediction_table.item(i, 2).setBackground(Qt.red)
-    
-    def update_param_plot(self):
-        """Update the parameter optimization plot"""
-        self.param_figure.clear()
-        ax = self.param_figure.add_subplot(111)
-        
-        # Get selected parameter
-        param = self.param_combo.currentText()
-        
-        # Create mock parameter optimization data
-        param_ranges = {
-            "pH": (3, 9),
-            "Temperature": (15, 45),
-            "Scan Rate": (10, 200),
-            "Deposition Time": (30, 300),
-            "Amplitude": (5, 100),
-            "Frequency": (10, 150),
-            "Step Potential": (1, 20)
-        }
-        
-        param_units = {
-            "pH": "",
-            "Temperature": "°C",
-            "Scan Rate": "mV/s",
-            "Deposition Time": "s",
-            "Amplitude": "mV",
-            "Frequency": "Hz",
-            "Step Potential": "mV"
-        }
-        
-        # Get range for selected parameter
-        min_val, max_val = param_ranges.get(param, (0, 100))
-        unit = param_units.get(param, "")
-        
-        # Generate parameter values
-        x = np.linspace(min_val, max_val, 20)
-        
-        # Generate response values with an optimal point
-        # Different optimal point for each parameter
-        optimal_indices = {
-            "pH": 7,
-            "Temperature": 10,
-            "Scan Rate": 12,
-            "Deposition Time": 15,
-            "Amplitude": 8,
-            "Frequency": 11,
-            "Step Potential": 14
-        }
-        
-        optimal_idx = optimal_indices.get(param, 10)
-        optimal_val = x[optimal_idx]
-        
-        # Generate response curve with maximum at optimal value
-        y = -((x - optimal_val) ** 2) + 100 + np.random.normal(0, 5, 20)
-        
-        # Plot parameter optimization curve
-        ax.plot(x, y, 'o-', color='blue')
-        
-        # Mark optimal point
-        ax.plot(optimal_val, y[optimal_idx], 'ro', markersize=10)
-        
-        # Add annotation for optimal value
-        ax.annotate(f'Optimal: {optimal_val:.2f} {unit}',
-                    xy=(optimal_val, y[optimal_idx]),
-                    xytext=(optimal_val, y[optimal_idx] - 20),
-                    arrowprops=dict(arrowstyle='->'),
-                    ha='center')
-        
-        # Set labels and title
-        ax.set_xlabel(f'{param} {unit}')
-        ax.set_ylabel('Sensor Response (a.u.)')
-        ax.set_title(f'Optimization of {param}')
-        
-        self.param_canvas.draw()
-        
-        # Update optimal parameter in the table
-        for i in range(self.param_table.rowCount()):
-            param_name = self.param_table.item(i, 0).text()
-            if param_name == param:
-                # Get unit for this parameter
-                unit = param_units.get(param, "")
-                self.param_table.setItem(i, 1, QTableWidgetItem(f"{optimal_val:.2f} {unit}"))
-    
-    def generate_report_preview(self):
-        """Generate a preview of the report"""
-        report_text = "# Electrochemical Sensor Analysis Report\n\n"
-        
-        # Add date and time
-        from datetime import datetime
-        report_text += f"**Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
-        
-        # Add model information if selected
-        if self.include_model_check.isChecked() and self.app_data.get("model_config") is not None:
-            model_config = self.app_data["model_config"]
-            
-            report_text += "## Model Information\n\n"
-            report_text += f"**Model Type:** {model_config.get('model_type', 'Unknown')}\n"
-            
-            if self.app_data.get("model_results") is not None:
-                metrics = self.app_data["model_results"].get("metrics", {})
-                
-                report_text += "### Performance Metrics\n\n"
-                report_text += f"- Accuracy: {metrics.get('accuracy', 0):.4f}\n"
-                report_text += f"- Precision: {metrics.get('precision', 0):.4f}\n"
-                report_text += f"- Recall: {metrics.get('recall', 0):.4f}\n"
-                report_text += f"- F1 Score: {metrics.get('f1', 0):.4f}\n"
-                report_text += f"- ROC AUC: {metrics.get('roc_auc', 0):.4f}\n\n"
-        
-        # Add calibration information if selected
-        if self.include_calib_check.isChecked():
-            report_text += "## Calibration Information\n\n"
-            
-            antibiotic = self.antibiotic_combo.currentText()
-            report_text += f"**Antibiotic:** {antibiotic}\n"
-            report_text += f"**Equation:** {self.equation_label.text()}\n"
-            report_text += f"**R² Value:** {self.r2_label.text()}\n"
-            report_text += f"**Limit of Detection (LOD):** {self.lod_label.text()}\n"
-            report_text += f"**Limit of Quantification (LOQ):** {self.loq_label.text()}\n"
-            report_text += f"**Linear Range:** {self.range_label.text()}\n\n"
-        
-        # Add prediction results if selected
-        if self.include_pred_check.isChecked():
-            report_text += "## Prediction Results\n\n"
-            
-            sample = self.sample_combo.currentText()
-            report_text += f"**Sample:** {sample}\n\n"
-            
-            report_text += "| Antibiotic | Predicted Conc. | Actual Conc. |\n"
-            report_text += "|------------|-----------------|-------------|\n"
-            
-            for i in range(self.prediction_table.rowCount()):
-                antibiotic = self.prediction_table.item(i, 0).text()
-                pred = self.prediction_table.item(i, 1).text()
-                actual = self.prediction_table.item(i, 2).text()
-                
-                report_text += f"| {antibiotic} | {pred} | {actual} |\n"
-            
-            report_text += "\n"
-        
-        # Add parameter optimization if selected
-        if self.include_param_check.isChecked():
-            report_text += "## Parameter Optimization\n\n"
-            
-            report_text += "| Parameter | Optimal Value |\n"
-            report_text += "|-----------|---------------|\n"
-            
-            for i in range(self.param_table.rowCount()):
-                param = self.param_table.item(i, 0).text()
-                value = self.param_table.item(i, 1).text()
-                
-                report_text += f"| {param} | {value} |\n"
-            
-            report_text += "\n"
-        
-        # Add conclusion
-        report_text += "## Conclusion\n\n"
-        report_text += "This report presents the results of electrochemical sensor analysis for antibiotic detection in food samples. "
-        report_text += "The calibration curves, prediction results, and parameter optimization provide insights into the performance "
-        report_text += "and applicability of the developed sensor system for routine monitoring of antibiotics in food products.\n\n"
-        
-        # Display the report preview
-        self.report_preview.setMarkdown(report_text)
-        
-        # Store report text in app_data
-        self.app_data["report_text"] = report_text
-        
-        # Signal that report is ready
-        self.report_ready.emit(True)
-    
-    def export_report(self):
-        """Export the report to a file"""
-        # Generate report if not already done
-        if "report_text" not in self.app_data:
-            self.generate_report_preview()
-        
-        # Ask for save location
-        file_dialog = QFileDialog()
-        file_path, _ = file_dialog.getSaveFileName(
-            self, "Save Report", "", "Markdown Files (*.md);;Text Files (*.txt);;All Files (*)"
-        )
-        
-        if file_path:
-            try:
-                with open(file_path, 'w') as f:
-                    f.write(self.app_data["report_text"])
-                print(f"Report saved to {file_path}")
-            except Exception as e:
-                print(f"Error saving report: {e}")
-    
+
     def showEvent(self, event):
         """Handle when tab is shown"""
         super().showEvent(event)
-        
-        # Generate initial plots
-        self.update_calibration_plot()
+
+        # Update displays with current model results
+        self.update_model_summary()
         self.update_prediction_plot()
-        self.update_param_plot()
+        self.update_feature_importance_plot()
+        self.update_confusion_matrix_plot()
+
+    def update_model_summary(self):
+        """Update the model summary information"""
+        # Check if model results are available
+        if "model_results" not in self.app_data:
+            return
+
+        results = self.app_data["model_results"]
+        model_config = self.app_data.get("model_config", {})
+
+        # Update model information
+        self.model_type_label.setText(model_config.get("model_type", "Unknown"))
+
+        is_regression = results.get("is_regression", False)
+        self.task_type_label.setText("Regression" if is_regression else "Classification")
+
+        target_variable = self.app_data.get("target_variable", "Unknown")
+        self.target_label.setText(target_variable)
+
+        test_size = model_config.get("test_size", 0.2)
+        self.test_size_label.setText(f"{test_size:.2f} ({int(test_size*100)}%)")
+
+        # Update metrics table
+        metrics = results.get("metrics", {})
+        self.metrics_table.setRowCount(len(metrics))
+
+        for i, (metric, value) in enumerate(metrics.items()):
+            self.metrics_table.setItem(i, 0, QTableWidgetItem(metric.upper()))
+
+            # Format value based on type
+            if isinstance(value, float):
+                self.metrics_table.setItem(i, 1, QTableWidgetItem(f"{value:.4f}"))
+            elif isinstance(value, (list, np.ndarray)):
+                # For confusion matrix or other array values
+                if metric == "confusion_matrix":
+                    # Skip confusion matrix in table - it's shown in its own tab
+                    self.metrics_table.setItem(i, 1, QTableWidgetItem("See Confusion Matrix tab"))
+                else:
+                    self.metrics_table.setItem(i, 1, QTableWidgetItem(str(value)))
+            else:
+                self.metrics_table.setItem(i, 1, QTableWidgetItem(str(value)))
+
+    def update_prediction_plot(self):
+        """Update the prediction results plot"""
+        self.prediction_figure.clear()
+        ax = self.prediction_figure.add_subplot(111)
+
+        # Check if model results are available
+        if "model_results" not in self.app_data:
+            ax.text(0.5, 0.5, "No model results available", ha="center", va="center")
+            self.prediction_canvas.draw()
+            return
+
+        results = self.app_data["model_results"]
+        is_regression = results.get("is_regression", False)
+
+        # Get test data and predictions
+        y_test = results.get("y_test")
+        y_pred = results.get("y_pred")
+
+        if y_test is None or y_pred is None or len(y_test) == 0 or len(y_pred) == 0:
+            ax.text(0.5, 0.5, "No prediction data available", ha="center", va="center")
+            self.prediction_canvas.draw()
+            return
+
+        # Plot based on task type
+        if is_regression:
+            # Scatter plot of actual vs predicted values
+            ax.scatter(y_test, y_pred, alpha=0.7)
+
+            # Add perfect prediction line
+            min_val = min(min(y_test), min(y_pred))
+            max_val = max(max(y_test), max(y_pred))
+            ax.plot([min_val, max_val], [min_val, max_val], 'r--')
+
+            # Add labels
+            ax.set_xlabel('Actual Values')
+            ax.set_ylabel('Predicted Values')
+            ax.set_title('Actual vs Predicted Values')
+
+            # Add R² value
+            r2 = results.get("metrics", {}).get("r2", 0)
+            ax.text(0.05, 0.95, f"R² = {r2:.4f}", transform=ax.transAxes,
+                    verticalalignment='top', bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+        else:
+            # For classification, show bar chart of actual vs predicted class counts
+            actual_counts = Counter(y_test)
+            pred_counts = Counter(y_pred)
+
+            # Get all unique classes
+            all_classes = sorted(list(set(actual_counts.keys()) | set(pred_counts.keys())))
+
+            # Create bar chart
+            x = np.arange(len(all_classes))
+            width = 0.35
+
+            actual_values = [actual_counts.get(cls, 0) for cls in all_classes]
+            pred_values = [pred_counts.get(cls, 0) for cls in all_classes]
+
+            ax.bar(x - width/2, actual_values, width, label='Actual')
+            ax.bar(x + width/2, pred_values, width, label='Predicted')
+
+            # Add labels
+            ax.set_xlabel('Class')
+            ax.set_ylabel('Count')
+            ax.set_title('Actual vs Predicted Class Counts')
+            ax.set_xticks(x)
+            ax.set_xticklabels(all_classes)
+            ax.legend()
+
+        # Add grid
+        ax.grid(True, linestyle='--', alpha=0.7)
+
+        self.prediction_canvas.draw()
+
+    def update_feature_importance_plot(self):
+        """Update the feature importance plot"""
+        self.feature_figure.clear()
+        ax = self.feature_figure.add_subplot(111)
+
+        # Check if model results are available
+        if "model_results" not in self.app_data:
+            ax.text(0.5, 0.5, "No model results available", ha="center", va="center")
+            self.feature_canvas.draw()
+            return
+
+        results = self.app_data["model_results"]
+        feature_importances = results.get("feature_importances")
+
+        if feature_importances is None or len(feature_importances) == 0:
+            ax.text(0.5, 0.5, "No feature importance data available", ha="center", va="center")
+            self.feature_canvas.draw()
+            return
+
+        # Get feature names
+        feature_names = self.app_data.get("selected_features", [])
+
+        # If feature names not available, use generic names
+        if not feature_names or len(feature_names) != len(feature_importances):
+            feature_names = [f"Feature {i+1}" for i in range(len(feature_importances))]
+
+        # Sort features by importance
+        indices = np.argsort(feature_importances)[::-1]
+        sorted_importances = feature_importances[indices]
+        sorted_names = [feature_names[i] for i in indices]
+
+        # Limit to top 20 features for readability
+        if len(sorted_names) > 20:
+            sorted_names = sorted_names[:20]
+            sorted_importances = sorted_importances[:20]
+
+        # Create horizontal bar chart
+        y_pos = np.arange(len(sorted_names))
+        ax.barh(y_pos, sorted_importances, align='center')
+        ax.set_yticks(y_pos)
+        ax.set_yticklabels(sorted_names)
+        ax.invert_yaxis()  # Labels read top-to-bottom
+        ax.set_xlabel('Importance')
+        ax.set_title('Feature Importance')
+
+        self.feature_canvas.draw()
+
+    def update_confusion_matrix_plot(self):
+        """Update the confusion matrix plot"""
+        self.confusion_figure.clear()
+        ax = self.confusion_figure.add_subplot(111)
+
+        # Check if model results are available
+        if "model_results" not in self.app_data:
+            ax.text(0.5, 0.5, "No model results available", ha="center", va="center")
+            self.confusion_canvas.draw()
+            return
+
+        results = self.app_data["model_results"]
+        is_regression = results.get("is_regression", False)
+
+        # Only show confusion matrix for classification tasks
+        if is_regression:
+            ax.text(0.5, 0.5, "Confusion matrix not applicable for regression tasks",
+                   ha="center", va="center")
+            self.confusion_canvas.draw()
+            return
+
+        # Get confusion matrix from results
+        cm = results.get("metrics", {}).get("confusion_matrix")
+
+        if cm is None:
+            # If not available, compute it from y_test and y_pred
+            y_test = results.get("y_test")
+            y_pred = results.get("y_pred")
+
+            if y_test is None or y_pred is None or len(y_test) == 0 or len(y_pred) == 0:
+                ax.text(0.5, 0.5, "No data available to compute confusion matrix",
+                       ha="center", va="center")
+                self.confusion_canvas.draw()
+                return
+
+            # Compute confusion matrix
+            cm = sk_confusion_matrix(y_test, y_pred)
+
+        # Convert to numpy array if it's a list
+        if isinstance(cm, list):
+            cm = np.array(cm)
+
+        # Plot confusion matrix
+        im = ax.imshow(cm, interpolation='nearest', cmap=plt.cm.Blues)
+        ax.figure.colorbar(im, ax=ax)
+
+        # Get class labels
+        classes = sorted(list(set(results.get("y_test", []))))
+        if not classes:
+            classes = [f"Class {i}" for i in range(len(cm))]  # Fallback
+
+        # Add labels
+        ax.set(xticks=np.arange(len(classes)),
+               yticks=np.arange(len(classes)),
+               xticklabels=classes, yticklabels=classes,
+               ylabel='True label',
+               xlabel='Predicted label',
+               title='Confusion Matrix')
+
+        # Rotate the tick labels and set their alignment
+        plt.setp(ax.get_xticklabels(), rotation=45, ha="right", rotation_mode="anchor")
+
+        # Loop over data dimensions and create text annotations
+        # Calculate threshold safely
+        if hasattr(cm, 'max'):
+            thresh = cm.max() / 2.
+        else:
+            # Fallback if max() is not available
+            thresh = np.max(cm) / 2. if cm.size > 0 else 0
+
+        for i in range(len(cm)):
+            for j in range(len(cm[i])):
+                ax.text(j, i, format(cm[i, j], 'd'),
+                        ha="center", va="center",
+                        color="white" if cm[i, j] > thresh else "black")
+
+        self.confusion_canvas.draw()
+
+    def generate_report_preview(self):
+        """Generate a preview of the report"""
+        report_text = "# Model Evaluation Report\n\n"
+
+        # Add date and time
+        report_text += f"**Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+
+        # Check if model results are available
+        if "model_results" not in self.app_data:
+            report_text += "No model results available.\n"
+            self.report_preview.setText(report_text)
+            return
+
+        results = self.app_data["model_results"]
+        model_config = self.app_data.get("model_config", {})
+        is_regression = results.get("is_regression", False)
+
+        # Add model summary if selected
+        if self.include_summary_check.isChecked():
+            report_text += "## Model Summary\n\n"
+            report_text += f"**Model Type:** {model_config.get('model_type', 'Unknown')}\n"
+            report_text += f"**Task Type:** {'Regression' if is_regression else 'Classification'}\n"
+            report_text += f"**Target Variable:** {self.app_data.get('target_variable', 'Unknown')}\n"
+            report_text += f"**Test Size:** {model_config.get('test_size', 0.2):.2f}\n\n"
+
+            # Add metrics
+            metrics = results.get("metrics", {})
+            if metrics:
+                report_text += "### Performance Metrics\n\n"
+                for metric, value in metrics.items():
+                    if isinstance(value, float):
+                        report_text += f"- **{metric.upper()}:** {value:.4f}\n"
+                    elif not isinstance(value, (list, np.ndarray)):  # Skip arrays/matrices
+                        report_text += f"- **{metric.upper()}:** {value}\n"
+                report_text += "\n"
+
+        # Add prediction results if selected
+        if self.include_pred_check.isChecked():
+            report_text += "## Prediction Results\n\n"
+            if is_regression:
+                report_text += "Actual vs Predicted values plot included in the exported report.\n\n"
+            else:
+                report_text += "Class distribution plot included in the exported report.\n\n"
+
+        # Add feature importance if selected
+        if self.include_feature_check.isChecked():
+            report_text += "## Feature Importance\n\n"
+            feature_importances = results.get("feature_importances")
+            if feature_importances is not None and len(feature_importances) > 0:
+                report_text += "Feature importance plot included in the exported report.\n\n"
+
+                # Get feature names
+                feature_names = self.app_data.get("selected_features", [])
+
+                # If feature names not available, use generic names
+                if not feature_names or len(feature_names) != len(feature_importances):
+                    feature_names = [f"Feature {i+1}" for i in range(len(feature_importances))]
+
+                # Sort features by importance
+                indices = np.argsort(feature_importances)[::-1]
+                sorted_importances = feature_importances[indices]
+                sorted_names = [feature_names[i] for i in indices]
+
+                # List top 5 features
+                report_text += "Top 5 most important features:\n\n"
+                for i in range(min(5, len(sorted_names))):
+                    report_text += f"{i+1}. **{sorted_names[i]}:** {sorted_importances[i]:.4f}\n"
+                report_text += "\n"
+            else:
+                report_text += "No feature importance data available.\n\n"
+
+        # Add confusion matrix if selected
+        if self.include_cm_check.isChecked() and not is_regression:
+            report_text += "## Confusion Matrix\n\n"
+            report_text += "Confusion matrix included in the exported report.\n\n"
+
+        self.report_preview.setText(report_text)
+        self.report_ready.emit(True)
+
+    def export_report(self):
+        """Export the report to a file"""
+        # Generate report preview first
+        self.generate_report_preview()
+
+        # Ask for file location
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "Save Report", "", "Text Files (*.txt);;Markdown Files (*.md);;All Files (*)"
+        )
+
+        if not file_path:
+            return
+
+        try:
+            with open(file_path, 'w') as f:
+                f.write(self.report_preview.toPlainText())
+
+            QMessageBox.information(self, "Success", f"Report saved to {file_path}")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to save report: {str(e)}")

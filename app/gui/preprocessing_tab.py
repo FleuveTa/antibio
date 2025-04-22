@@ -9,7 +9,7 @@ from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 from datetime import datetime
 
-from app.core.data_loader import preprocess_data
+from app.core.preprocessing import preprocess_data, apply_transformers
 from app.core.experiment_manager import ExperimentManager
 
 
@@ -78,23 +78,44 @@ class PreprocessingTab(QWidget):
         preproc_group = QGroupBox("Preprocessing Options")
         preproc_layout = QGridLayout()
 
-        self.normalize_cb = QCheckBox("Normalize data")
-        preproc_layout.addWidget(self.normalize_cb, 0, 0)
-
-        self.outliers_cb = QCheckBox("Remove outliers")
-        preproc_layout.addWidget(self.outliers_cb, 0, 1)
+        # Data cleaning options
+        cleaning_group = QGroupBox("Data Cleaning")
+        cleaning_layout = QGridLayout()
 
         self.missing_cb = QCheckBox("Fill missing values")
-        preproc_layout.addWidget(self.missing_cb, 1, 0)
+        self.missing_cb.setToolTip("Replace missing values with column means")
+        cleaning_layout.addWidget(self.missing_cb, 0, 0)
+
+        # Remove outliers option has been removed to preserve all data points
+        # self.outliers_cb = QCheckBox("Remove outliers")
+        # self.outliers_cb.setToolTip("Remove data points with z-score > 3")
+        # cleaning_layout.addWidget(self.outliers_cb, 0, 1)
+
+        cleaning_group.setLayout(cleaning_layout)
+        preproc_layout.addWidget(cleaning_group, 0, 0, 1, 2)
+
+        # Signal processing options
+        signal_group = QGroupBox("Signal Processing")
+        signal_layout = QGridLayout()
 
         self.smooth_cb = QCheckBox("Signal smoothing")
-        preproc_layout.addWidget(self.smooth_cb, 1, 1)
+        self.smooth_cb.setToolTip("Apply Savitzky-Golay filter to reduce noise")
+        signal_layout.addWidget(self.smooth_cb, 0, 0)
 
         self.baseline_cb = QCheckBox("Baseline correction")
-        preproc_layout.addWidget(self.baseline_cb, 2, 0)
+        self.baseline_cb.setToolTip("Remove linear trend from signal")
+        signal_layout.addWidget(self.baseline_cb, 0, 1)
 
-        self.peak_cb = QCheckBox("Peak detection")
-        preproc_layout.addWidget(self.peak_cb, 2, 1)
+        self.peaks_cb = QCheckBox("Detect peaks")
+        self.peaks_cb.setToolTip("Detect peaks and valleys in the voltammetry data")
+        self.peaks_cb.setChecked(True)  # Enable by default
+        signal_layout.addWidget(self.peaks_cb, 1, 0)
+
+        signal_group.setLayout(signal_layout)
+        preproc_layout.addWidget(signal_group, 1, 0, 1, 2)
+
+        # Placeholder for future options if needed
+        # We removed normalization as it's not necessary and can affect electrochemical relationships
 
         # Button layout
         btn_layout = QHBoxLayout()
@@ -144,12 +165,12 @@ class PreprocessingTab(QWidget):
             if "preprocessing_steps" in self.app_data and self.app_data["preprocessing_steps"]:
                 # Set checkboxes based on loaded preprocessing steps
                 steps = [step["name"] for step in self.app_data["preprocessing_steps"]]
-                self.normalize_cb.setChecked("normalize" in steps)
-                self.outliers_cb.setChecked("remove_outliers" in steps)
+                # self.normalize_cb.setChecked("normalize" in steps)  # Normalization removed
+                # self.outliers_cb.setChecked("remove_outliers" in steps)  # Remove outliers option has been removed
                 self.missing_cb.setChecked("fill_missing" in steps)
                 self.smooth_cb.setChecked("smooth" in steps)
                 self.baseline_cb.setChecked("baseline_correction" in steps)
-                self.peak_cb.setChecked("peak_detection" in steps)
+                self.peaks_cb.setChecked("detect_peaks" in steps)  # Fixed variable name and step name
 
                 # If processed data was saved, try to load it
                 current_experiment_id = self.app_data.get("current_experiment_id")
@@ -218,6 +239,15 @@ class PreprocessingTab(QWidget):
                 # Add a subtle shadow effect for depth
                 ax.plot(plot_df["Potential"], plot_df["Current"], linewidth=4, color='#1f77b4', alpha=0.2)
 
+                # Plot peaks if available
+                if "Peaks" in plot_df.columns:
+                    peak_points = plot_df[plot_df["Peaks"] == True]
+                    if not peak_points.empty:
+                        ax.scatter(peak_points["Potential"], peak_points["Current"],
+                                  s=80, color='red', marker='o', alpha=0.7,
+                                  edgecolors='white', linewidths=1, zorder=10,
+                                  label='Detected Peaks')
+
             elif plot_style == "Scatter Plot":
                 ax.scatter(plot_df["Potential"], plot_df["Current"], s=25, color='#1f77b4',
                           alpha=0.7, edgecolors='white', linewidths=0.5)
@@ -225,15 +255,42 @@ class PreprocessingTab(QWidget):
                 # Add connecting line with low alpha for better visualization
                 ax.plot(plot_df["Potential"], plot_df["Current"], linewidth=1, color='#1f77b4', alpha=0.3)
 
+                # Plot peaks if available
+                if "Peaks" in plot_df.columns:
+                    peak_points = plot_df[plot_df["Peaks"] == True]
+                    if not peak_points.empty:
+                        ax.scatter(peak_points["Potential"], peak_points["Current"],
+                                  s=80, color='red', marker='o', alpha=0.7,
+                                  edgecolors='white', linewidths=1, zorder=10,
+                                  label='Detected Peaks')
+
             elif plot_style == "Line + Markers":
                 ax.plot(plot_df["Potential"], plot_df["Current"], linewidth=2, color='#1f77b4',
                        marker='o', markersize=5, markerfacecolor='white', markeredgecolor='#1f77b4')
+
+                # Plot peaks if available
+                if "Peaks" in plot_df.columns:
+                    peak_points = plot_df[plot_df["Peaks"] == True]
+                    if not peak_points.empty:
+                        ax.scatter(peak_points["Potential"], peak_points["Current"],
+                                  s=80, color='red', marker='*', alpha=0.9,
+                                  edgecolors='white', linewidths=1, zorder=10,
+                                  label='Detected Peaks')
 
             elif plot_style == "Step Plot":
                 ax.step(plot_df["Potential"], plot_df["Current"], linewidth=2, color='#1f77b4', where='post')
                 # Add points at the steps
                 ax.scatter(plot_df["Potential"], plot_df["Current"], s=20, color='#1f77b4',
                           alpha=0.7, edgecolors='white', linewidths=0.5, zorder=10)
+
+                # Plot peaks if available
+                if "Peaks" in plot_df.columns:
+                    peak_points = plot_df[plot_df["Peaks"] == True]
+                    if not peak_points.empty:
+                        ax.scatter(peak_points["Potential"], peak_points["Current"],
+                                  s=80, color='red', marker='D', alpha=0.8,
+                                  edgecolors='white', linewidths=1, zorder=11,
+                                  label='Detected Peaks')
 
             # Enhanced axis labels with better font
             ax.set_xlabel("Potential (V)", fontsize=12, fontweight='bold')
@@ -249,26 +306,9 @@ class PreprocessingTab(QWidget):
             # Add a light background color to the plot area
             ax.set_facecolor('#f8f9fa')
 
-            # If peak detection was applied, mark the peaks
-            if "Peaks" in plot_df.columns:
-                peaks_df = plot_df[plot_df["Peaks"] == True]
-                if not peaks_df.empty:
-                    ax.scatter(peaks_df["Potential"], peaks_df["Current"],
-                              s=100, color='red', marker='o', label='Peaks',
-                              edgecolors='white', linewidths=1.5, zorder=10)
-
-                    # Add peak annotations
-                    for i, (pot, curr) in enumerate(zip(peaks_df["Potential"], peaks_df["Current"])):
-                        ax.annotate(f"Peak {i+1}",
-                                   xy=(pot, curr),
-                                   xytext=(0, 10),
-                                   textcoords='offset points',
-                                   ha='center',
-                                   fontsize=9,
-                                   bbox=dict(boxstyle="round,pad=0.3", fc="white", ec="gray", alpha=0.8))
-
-                    # Enhanced legend
-                    ax.legend(loc='best', frameon=True, framealpha=0.9, fontsize=10)
+            # Add legend if needed
+            if plot_style in ["Line + Markers", "Scatter Plot"]:
+                ax.legend(loc='best', frameon=True, framealpha=0.9, fontsize=10)
 
             # Add a box around the plot
             for spine in ax.spines.values():
@@ -391,12 +431,12 @@ class PreprocessingTab(QWidget):
             return
 
         options = {
-            "normalize": self.normalize_cb.isChecked(),
-            "remove_outliers": self.outliers_cb.isChecked(),
+            "normalize": False,  # Normalization removed as it's not necessary for electrochemical data
+            "remove_outliers": False,  # Remove outliers option has been disabled to preserve all data points
             "fill_missing": self.missing_cb.isChecked(),
             "smooth": self.smooth_cb.isChecked(),
             "baseline_correction": self.baseline_cb.isChecked(),
-            "peak_detection": self.peak_cb.isChecked()
+            "detect_peaks": self.peaks_cb.isChecked()  # Add peak detection option
         }
 
         try:

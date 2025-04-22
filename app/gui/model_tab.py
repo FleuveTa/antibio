@@ -11,7 +11,7 @@ from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 from sklearn.model_selection import train_test_split
 
-from app.core.models import AntibioticClassifier
+from app.core.models import AntibioticClassifier, RegressionClassifier
 
 
 class TrainingThread(QThread):
@@ -19,16 +19,47 @@ class TrainingThread(QThread):
     progress_signal = pyqtSignal(int)
     result_signal = pyqtSignal(dict)
 
-    def __init__(self, model_config, X, y):
+    def __init__(self, model_config, X, y, is_regression=False):
         super().__init__()
         self.model_config = model_config
         self.X = X
         self.y = y
+        self.is_regression = is_regression
 
     def run(self):
         try:
-            # Create classifier with selected model type
-            classifier = AntibioticClassifier(model_type=self.model_config['model_type'])
+            # Debug information
+            print(f"\n==== TRAINING THREAD STARTED =====")
+            print(f"Model config: {self.model_config}")
+            print(f"X shape: {self.X.shape}")
+            print(f"y shape: {self.y.shape}")
+            print(f"y data type: {type(self.y[0]) if len(self.y) > 0 else 'empty'}")
+            print(f"y first few values: {self.y[:5] if len(self.y) > 0 else 'empty'}")
+            print(f"Is regression: {self.is_regression}")
+
+            # Check for NaN values in X and y
+            if np.isnan(self.X).any():
+                nan_count = np.isnan(self.X).sum()
+                print(f"Warning: Found {nan_count} NaN values in X. Replacing with 0.")
+                self.X = np.nan_to_num(self.X, nan=0.0)
+
+            # Create classifier with selected model type based on task type
+            if self.is_regression:
+                # Use regression model for concentration prediction
+                classifier = RegressionClassifier(model_type=self.model_config['model_type'])
+                print(f"Using RegressionClassifier for concentration prediction")
+
+                # For regression, ensure y is numeric
+                if not np.issubdtype(self.y.dtype, np.number):
+                    print(f"Converting y to numeric for regression (current type: {self.y.dtype})")
+                    try:
+                        self.y = self.y.astype(float)
+                    except Exception as e:
+                        raise ValueError(f"Cannot convert target to numeric values: {e}")
+            else:
+                # Use classification model for antibiotic detection
+                classifier = AntibioticClassifier(model_type=self.model_config['model_type'])
+                print(f"Using AntibioticClassifier for classification")
 
             # Update progress
             self.progress_signal.emit(20)
@@ -57,14 +88,24 @@ class TrainingThread(QThread):
                 results = classifier.train(self.X, self.y,
                                           test_size=self.model_config.get('test_size', 0.2))
 
+            # Add task type to results
+            results["is_regression"] = self.is_regression
+
             # Update progress
             self.progress_signal.emit(100)
+
+            print(f"Training completed successfully")
+            print(f"Results: {results.keys()}")
+            print(f"Metrics: {results.get('metrics', {})}")
+            print("===================================\n")
 
             # Emit results
             self.result_signal.emit(results)
 
         except Exception as e:
+            import traceback
             print(f"Error in training thread: {e}")
+            print(traceback.format_exc())
             self.result_signal.emit({"error": str(e)})
 
 
@@ -144,32 +185,27 @@ class ModelTrainingTab(QWidget):
         self.test_spin.setSuffix("%")
         config_layout.addWidget(self.test_spin, 2, 1)
 
-        # Cross-validation folds
-        config_layout.addWidget(QLabel("CV Folds:"), 3, 0)
-        self.cv_spin = QSpinBox()
-        self.cv_spin.setRange(2, 10)
-        self.cv_spin.setValue(5)
-        config_layout.addWidget(self.cv_spin, 3, 1)
+        # Removed CV Folds section
 
         # Hyperparameter optimization
         self.optimize_check = QCheckBox("Hyperparameter Optimization")
-        config_layout.addWidget(self.optimize_check, 4, 0, 1, 2)
+        config_layout.addWidget(self.optimize_check, 3, 0, 1, 2)
 
         # Model specific params section (will be populated based on model type)
         self.params_frame = QFrame()
         self.params_layout = QGridLayout(self.params_frame)
-        config_layout.addWidget(self.params_frame, 5, 0, 1, 2)
+        config_layout.addWidget(self.params_frame, 4, 0, 1, 2)
 
         # Training button
         self.train_btn = QPushButton("Train Model")
         self.train_btn.clicked.connect(self.train_model)
-        config_layout.addWidget(self.train_btn, 6, 0, 1, 2)
+        config_layout.addWidget(self.train_btn, 5, 0, 1, 2)
 
         # Progress bar
         self.progress_bar = QProgressBar()
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
-        config_layout.addWidget(self.progress_bar, 7, 0, 1, 2)
+        config_layout.addWidget(self.progress_bar, 6, 0, 1, 2)
 
         config_group.setLayout(config_layout)
         splitter.addWidget(config_group)
@@ -264,6 +300,14 @@ class ModelTrainingTab(QWidget):
 
     def update_model_options(self):
         """Update parameter options based on selected model"""
+        # Clear references to parameter widgets
+        self.n_estimators_spin = None
+        self.max_depth_spin = None
+        self.learning_rate_spin = None
+        self.kernel_combo = None
+        self.c_spin = None
+        self.gamma_combo = None
+
         # Clear current params layout
         while self.params_layout.count():
             item = self.params_layout.takeAt(0)
@@ -346,13 +390,18 @@ class ModelTrainingTab(QWidget):
                 self.target_combo.clear()
 
                 # Add metadata columns like concentration and antibiotic
-                metadata_columns = [col for col in feature_matrix.columns if col in ['concentration', 'antibiotic']]
+                metadata_columns = [col for col in feature_matrix.columns if col in ['concentration', 'antibiotic', 'path']]
                 if metadata_columns:
-                    self.target_combo.addItems(metadata_columns)
-                    print(f"Found metadata columns in feature_matrix: {metadata_columns}")
-                    # Store for future use
-                    self.app_data["metadata_columns"] = metadata_columns
-                    return
+                    # Only add concentration and antibiotic as target variables (not path)
+                    target_columns = [col for col in metadata_columns if col in ['concentration', 'antibiotic']]
+                    if target_columns:
+                        self.target_combo.addItems(target_columns)
+                        print(f"Found target columns in feature_matrix: {target_columns}")
+                        # Store for future use
+                        self.app_data["metadata_columns"] = metadata_columns
+                        return
+                    else:
+                        print("No target columns found in metadata columns")
                 else:
                     print("No metadata columns found in feature_matrix")
 
@@ -393,11 +442,64 @@ class ModelTrainingTab(QWidget):
 
             # Get all feature columns (exclude metadata columns)
             feature_cols = [col for col in feature_matrix.columns
-                           if col not in ['concentration', 'antibiotic', 'path']]
+                           if col not in ['concentration', 'antibiotic', 'path', 'row_index']]
+
+            # Check if we have any features
+            if len(feature_cols) == 0:
+                QMessageBox.warning(self, "No Features",
+                                  "No feature columns found in the dataset. Please extract features first.")
+                return
+
+            # Debug information
+            print(f"Using {len(feature_cols)} features for training")
+            print(f"First few feature names: {feature_cols[:5]}")
 
             # Get feature matrix and target vector
             X = feature_matrix[feature_cols].values
-            y = feature_matrix[target_col].values
+
+            # Convert target to appropriate type based on task
+            if target_col == 'concentration':
+                # For regression, ensure target is numeric
+                try:
+                    # First try to convert to float directly
+                    y = pd.to_numeric(feature_matrix[target_col], errors='coerce')
+
+                    # Check for NaN values after conversion
+                    if y.isna().any():
+                        print(f"Warning: {y.isna().sum()} NaN values found in concentration after conversion. Dropping these rows.")
+                        # Get indices of non-NaN values
+                        valid_indices = ~y.isna()
+                        # Filter X and y
+                        X = X[valid_indices]
+                        y = y[valid_indices].values
+                    else:
+                        y = y.values
+
+                    print(f"Converted concentration to float: {y[:5]}")
+                    print(f"Concentration range: {np.min(y)} to {np.max(y)}, mean: {np.mean(y)}, std: {np.std(y)}")
+
+                    # Check if all values are the same
+                    if np.min(y) == np.max(y):
+                        QMessageBox.warning(self, "Data Variation Error",
+                                          "All concentration values are identical. Regression models require variation in the target variable.")
+                        return
+                except Exception as e:
+                    print(f"Error converting concentration to float: {e}")
+                    QMessageBox.warning(self, "Data Type Error",
+                                      f"Could not convert concentration to numeric values: {e}")
+                    return
+            else:
+                # For classification, keep as is (could be string or numeric)
+                y = feature_matrix[target_col].values
+                print(f"Using classification target: {y[:5]}")
+                print(f"Unique classes: {np.unique(y)}")
+
+                # Check if we have enough samples for each class
+                unique_classes, class_counts = np.unique(y, return_counts=True)
+                min_samples = np.min(class_counts)
+                if min_samples < 3:
+                    QMessageBox.warning(self, "Warning",
+                                     f"Some classes have very few samples (minimum: {min_samples}). This may affect model performance.")
 
             # Store selected features for later use
             self.app_data["selected_features"] = feature_cols
@@ -431,6 +533,51 @@ class ModelTrainingTab(QWidget):
         # Store target variable name
         self.app_data["target_variable"] = target_col
 
+        # Determine if this is a regression or classification task based on target variable
+        is_regression = False
+        if target_col == 'concentration':
+            is_regression = True
+            print(f"Detected regression task for target '{target_col}'")
+
+            # Check if target values are numeric
+            if not pd.api.types.is_numeric_dtype(y):
+                try:
+                    # Try to convert to numeric
+                    y = pd.to_numeric(y, errors='coerce')
+                    # Check for NaN values after conversion
+                    if y.isna().any():
+                        print(f"Warning: {y.isna().sum()} NaN values found after converting to numeric. Dropping these rows.")
+                        # Get indices of non-NaN values
+                        valid_indices = ~y.isna()
+                        # Filter X and y
+                        X = X[valid_indices]
+                        y = y[valid_indices]
+                except Exception as e:
+                    print(f"Error converting target to numeric: {e}")
+                    QMessageBox.critical(self, "Error",
+                                      f"The target column '{target_col}' contains non-numeric values that cannot be used for regression.")
+                    return
+
+            # Print target variable statistics
+            print(f"Target variable statistics: min={y.min()}, max={y.max()}, mean={y.mean()}, std={y.std()}")
+            print(f"Number of samples after preprocessing: {len(y)}")
+
+            # Check if we have enough variation in the target variable
+            # Use np.unique for numpy arrays
+            unique_values = np.unique(y)
+            if len(unique_values) < 3:
+                QMessageBox.warning(self, "Warning",
+                                 f"The target column '{target_col}' has only {len(unique_values)} unique values. Regression models work best with more variation.")
+
+            # Inform the user about the task type
+            QMessageBox.information(self, "Regression Task",
+                                  f"Training a regression model for '{target_col}' prediction.")
+        else:
+            print(f"Detected classification task for target '{target_col}'")
+            # Inform the user about the task type
+            QMessageBox.information(self, "Classification Task",
+                                  f"Training a classification model for '{target_col}' detection.")
+
         # Configure model
         model_type = self.model_combo.currentText()
         # Extract abbreviation from model type text
@@ -439,41 +586,62 @@ class ModelTrainingTab(QWidget):
         model_config = {
             "model_type": model_type_code,
             "test_size": self.test_spin.value() / 100,  # Convert from percentage
-            "cv_folds": self.cv_spin.value(),
             "optimize": self.optimize_check.isChecked()
         }
 
-        # Add model-specific parameters
-        if hasattr(self, "n_estimators_spin"):
-            model_config["n_estimators"] = self.n_estimators_spin.value()
+        # Add model-specific parameters - check if attributes exist AND are valid widgets
+        try:
+            if hasattr(self, "n_estimators_spin") and self.n_estimators_spin is not None:
+                model_config["n_estimators"] = self.n_estimators_spin.value()
+        except RuntimeError as e:
+            print(f"Error accessing n_estimators_spin: {e}")
 
-        if hasattr(self, "max_depth_spin"):
-            model_config["max_depth"] = self.max_depth_spin.value()
+        try:
+            if hasattr(self, "max_depth_spin") and self.max_depth_spin is not None:
+                model_config["max_depth"] = self.max_depth_spin.value()
+        except RuntimeError as e:
+            print(f"Error accessing max_depth_spin: {e}")
 
-        if hasattr(self, "learning_rate_spin"):
-            model_config["learning_rate"] = self.learning_rate_spin.value()
+        try:
+            if hasattr(self, "learning_rate_spin") and self.learning_rate_spin is not None:
+                model_config["learning_rate"] = self.learning_rate_spin.value()
+        except RuntimeError as e:
+            print(f"Error accessing learning_rate_spin: {e}")
 
-        if hasattr(self, "kernel_combo"):
-            model_config["kernel"] = self.kernel_combo.currentText()
+        try:
+            if hasattr(self, "kernel_combo") and self.kernel_combo is not None:
+                model_config["kernel"] = self.kernel_combo.currentText()
+        except RuntimeError as e:
+            print(f"Error accessing kernel_combo: {e}")
 
-        if hasattr(self, "c_spin"):
-            model_config["C"] = self.c_spin.value()
+        try:
+            if hasattr(self, "c_spin") and self.c_spin is not None:
+                model_config["C"] = self.c_spin.value()
+        except RuntimeError as e:
+            print(f"Error accessing c_spin: {e}")
 
-        if hasattr(self, "gamma_combo"):
-            gamma = self.gamma_combo.currentText()
-            # Convert numeric strings to float
-            if gamma not in ["scale", "auto"]:
-                gamma = float(gamma)
-            model_config["gamma"] = gamma
+        try:
+            if hasattr(self, "gamma_combo") and self.gamma_combo is not None:
+                gamma = self.gamma_combo.currentText()
+                # Convert numeric strings to float
+                if gamma not in ["scale", "auto"]:
+                    try:
+                        gamma = float(gamma)
+                    except ValueError:
+                        pass
+                model_config["gamma"] = gamma
+        except RuntimeError as e:
+            print(f"Error accessing gamma_combo: {e}")
 
         # Reset progress bar
         self.progress_bar.setValue(0)
 
         # Store model config
         self.app_data["model_config"] = model_config
+        self.app_data["is_regression"] = is_regression
 
         # Create and start training thread
-        self.training_thread = TrainingThread(model_config, X, y)
+        self.training_thread = TrainingThread(model_config, X, y, is_regression)
         self.training_thread.progress_signal.connect(self.update_progress)
         self.training_thread.result_signal.connect(self.process_results)
         self.training_thread.start()
@@ -497,27 +665,87 @@ class ModelTrainingTab(QWidget):
         # Check for errors
         if "error" in results:
             print(f"Training error: {results['error']}")
+            QMessageBox.critical(self, "Training Error", f"Error during model training: {results['error']}")
             return
 
         # Store results
         self.app_data["model_results"] = results
 
-        # Update metrics table
+        # Check if this is a regression or classification task
+        is_regression = results.get("is_regression", False)
+
+        # Update metrics table based on task type
         metrics = results.get("metrics", {})
         if metrics:
-            self.metrics_table.setItem(0, 1, QTableWidgetItem(f"{metrics.get('accuracy', 0):.4f}"))
-            self.metrics_table.setItem(1, 1, QTableWidgetItem(f"{metrics.get('precision', 0):.4f}"))
-            self.metrics_table.setItem(2, 1, QTableWidgetItem(f"{metrics.get('recall', 0):.4f}"))
-            self.metrics_table.setItem(3, 1, QTableWidgetItem(f"{metrics.get('f1', 0):.4f}"))
-            self.metrics_table.setItem(4, 1, QTableWidgetItem(f"{metrics.get('roc_auc', 0):.4f}"))
+            # Clear existing metrics
+            self.metrics_table.clear()
 
-        # Update confusion matrix plot
-        self.update_confusion_matrix(results)
+            if is_regression:
+                # Set up regression metrics table
+                self.metrics_table.setRowCount(3)
+                self.metrics_table.setHorizontalHeaderLabels(["Metric", "Value"])
+                self.metrics_table.setItem(0, 0, QTableWidgetItem("R² Score"))
+                self.metrics_table.setItem(1, 0, QTableWidgetItem("Mean Squared Error"))
+                self.metrics_table.setItem(2, 0, QTableWidgetItem("Root MSE"))
 
-        # Update ROC curve plot
-        self.update_roc_curve(results)
+                # Expand regression metrics table to show more metrics
+                self.metrics_table.setRowCount(5)
+                self.metrics_table.setItem(0, 0, QTableWidgetItem("R² Score"))
+                self.metrics_table.setItem(1, 0, QTableWidgetItem("Mean Squared Error"))
+                self.metrics_table.setItem(2, 0, QTableWidgetItem("Root MSE"))
+                self.metrics_table.setItem(3, 0, QTableWidgetItem("Explained Variance"))
+                self.metrics_table.setItem(4, 0, QTableWidgetItem("Mean Absolute Error"))
 
-        # Update feature importance plot
+                # Fill in regression metrics
+                self.metrics_table.setItem(0, 1, QTableWidgetItem(f"{metrics.get('r2', 0):.4f}"))
+                self.metrics_table.setItem(1, 1, QTableWidgetItem(f"{metrics.get('mse', 0):.4f}"))
+                self.metrics_table.setItem(2, 1, QTableWidgetItem(f"{metrics.get('rmse', 0):.4f}"))
+                self.metrics_table.setItem(3, 1, QTableWidgetItem(f"{metrics.get('explained_variance', 0):.4f}"))
+                self.metrics_table.setItem(4, 1, QTableWidgetItem(f"{metrics.get('mean_absolute_error', 0):.4f}"))
+            else:
+                # Set up classification metrics table
+                # Determine how many metrics to show based on what's available
+                available_metrics = ["accuracy", "precision", "recall", "f1", "roc_auc"]
+                metrics_to_show = [m for m in available_metrics if m in metrics]
+
+                self.metrics_table.setRowCount(len(metrics_to_show))
+                self.metrics_table.setHorizontalHeaderLabels(["Metric", "Value"])
+
+                # Fill in classification metrics
+                for i, metric_name in enumerate(metrics_to_show):
+                    # Format metric name for display
+                    display_name = metric_name.replace('_', ' ').title()
+                    if metric_name == "roc_auc":
+                        display_name = "ROC AUC"
+                    elif metric_name == "f1":
+                        display_name = "F1 Score"
+
+                    self.metrics_table.setItem(i, 0, QTableWidgetItem(display_name))
+                    self.metrics_table.setItem(i, 1, QTableWidgetItem(f"{metrics.get(metric_name, 0):.4f}"))
+
+        # Update visualization based on task type
+        if is_regression:
+            # For regression, show scatter plot of actual vs predicted values
+            self.update_regression_plot(results)
+
+            # Hide classification-specific tabs
+            self.result_tabs.setTabVisible(1, False)  # Hide Evaluation Plots tab
+        else:
+            # For classification, show confusion matrix
+            self.update_confusion_matrix(results)
+
+            # Only show ROC curve for binary classification
+            y_test = results.get("y_test", [])
+            if len(y_test) > 0 and len(np.unique(y_test)) == 2:
+                # Binary classification - can show ROC curve
+                self.update_roc_curve(results)
+                # Show classification-specific tabs
+                self.result_tabs.setTabVisible(1, True)  # Show Evaluation Plots tab
+            else:
+                # Multiclass classification - hide ROC curve tab
+                self.result_tabs.setTabVisible(1, False)  # Hide Evaluation Plots tab
+
+        # Update feature importance plot (works for both regression and classification)
         self.update_feature_importance(results)
 
         # Update hyperparameter results
@@ -540,24 +768,25 @@ class ModelTrainingTab(QWidget):
         self.cm_figure.clear()
         ax = self.cm_figure.add_subplot(111)
 
-        # This is a simplified example - in a real app, you would compute
-        # the actual confusion matrix from y_test and y_pred
-        # For now, we'll create a mock 2x2 confusion matrix for binary classification
+        # Get confusion matrix from results
+        metrics = results.get("metrics", {})
+        cm = metrics.get("confusion_matrix", [])
 
-        y_test = results.get("y_test", [])
-        y_pred = results.get("y_pred", [])
-
-        if len(y_test) > 0 and len(y_pred) > 0:
-            # Compute confusion matrix - simplified example
-            from sklearn.metrics import confusion_matrix
-            cm = confusion_matrix(y_test, y_pred)
+        if cm and len(cm) > 0:
+            # Convert to numpy array if it's a list
+            if isinstance(cm, list):
+                cm = np.array(cm)
 
             # Plot confusion matrix
             im = ax.imshow(cm, interpolation='nearest', cmap=plt.cm.Blues)
             self.cm_figure.colorbar(im, ax=ax)
 
-            # Set labels
-            classes = ["Negative", "Positive"]
+            # Set labels based on matrix size
+            if cm.shape[0] == 2:  # Binary classification
+                classes = ["Negative", "Positive"]
+            else:  # Multiclass classification
+                classes = [str(i) for i in range(cm.shape[0])]
+
             ax.set_xticks(np.arange(len(classes)))
             ax.set_yticks(np.arange(len(classes)))
             ax.set_xticklabels(classes)
@@ -580,29 +809,101 @@ class ModelTrainingTab(QWidget):
         self.cm_canvas.draw()
 
     def update_roc_curve(self, results):
-        """Update ROC curve visualization"""
+        """Update ROC curve visualization for binary classification"""
         self.roc_figure.clear()
         ax = self.roc_figure.add_subplot(111)
 
         y_test = results.get("y_test", [])
         y_pred_proba = results.get("y_pred_proba", [])
 
-        if len(y_test) > 0 and len(y_pred_proba) > 0:
-            # Plot ROC curve
-            from sklearn.metrics import roc_curve, auc
-            fpr, tpr, _ = roc_curve(y_test, y_pred_proba)
-            roc_auc = auc(fpr, tpr)
+        # Check if we have binary classification data
+        if len(y_test) > 0 and len(y_pred_proba) > 0 and len(np.unique(y_test)) == 2:
+            try:
+                # For binary classification, we need the probability of the positive class
+                # If y_pred_proba is 2D (one column per class), take the second column
+                if isinstance(y_pred_proba, np.ndarray) and y_pred_proba.ndim == 2 and y_pred_proba.shape[1] >= 2:
+                    y_pred_proba_binary = y_pred_proba[:, 1]
+                else:
+                    # Otherwise use as is (assuming it's already the probability of the positive class)
+                    y_pred_proba_binary = y_pred_proba
 
-            ax.plot(fpr, tpr, lw=2, label=f'ROC curve (area = {roc_auc:.2f})')
-            ax.plot([0, 1], [0, 1], 'k--', lw=2)
-            ax.set_xlim([0.0, 1.0])
-            ax.set_ylim([0.0, 1.05])
-            ax.set_xlabel('False Positive Rate')
-            ax.set_ylabel('True Positive Rate')
-            ax.set_title('Receiver Operating Characteristic')
-            ax.legend(loc="lower right")
+                # Plot ROC curve
+                from sklearn.metrics import roc_curve, auc
+                fpr, tpr, _ = roc_curve(y_test, y_pred_proba_binary)
+                roc_auc = auc(fpr, tpr)
+
+                ax.plot(fpr, tpr, lw=2, label=f'ROC curve (area = {roc_auc:.2f})')
+                ax.plot([0, 1], [0, 1], 'k--', lw=2)
+                ax.set_xlim([0.0, 1.0])
+                ax.set_ylim([0.0, 1.05])
+                ax.set_xlabel('False Positive Rate')
+                ax.set_ylabel('True Positive Rate')
+                ax.set_title('Receiver Operating Characteristic')
+                ax.legend(loc="lower right")
+            except Exception as e:
+                print(f"Error plotting ROC curve: {e}")
+                ax.text(0.5, 0.5, f"Error plotting ROC curve: {e}", ha="center", va="center", wrap=True)
         else:
-            ax.text(0.5, 0.5, "No data available", ha="center", va="center")
+            ax.text(0.5, 0.5, "ROC curve only available for binary classification", ha="center", va="center")
+
+        self.roc_canvas.draw()
+
+    def update_regression_plot(self, results):
+        """Update regression plot with actual vs predicted values"""
+        self.cm_figure.clear()  # Use the confusion matrix figure for regression plot
+        ax = self.cm_figure.add_subplot(111)
+
+        y_test = results.get("y_test", [])
+        y_pred = results.get("y_pred", [])
+
+        if len(y_test) > 0 and len(y_pred) > 0:
+            # Create scatter plot of actual vs predicted values
+            ax.scatter(y_test, y_pred, alpha=0.7, color='blue', label='Predictions')
+
+            # Add perfect prediction line (y=x)
+            min_val = min(min(y_test), min(y_pred))
+            max_val = max(max(y_test), max(y_pred))
+            ax.plot([min_val, max_val], [min_val, max_val], 'r--', label='Perfect Prediction')
+
+            # Add labels and title
+            ax.set_xlabel('Actual Values')
+            ax.set_ylabel('Predicted Values')
+            ax.set_title('Actual vs Predicted Values')
+            ax.legend()
+
+            # Add metrics as text
+            r2 = results.get("metrics", {}).get("r2", 0)
+            mse = results.get("metrics", {}).get("mse", 0)
+            explained_var = results.get("metrics", {}).get("explained_variance", 0)
+
+            # Create a text box with multiple metrics
+            metrics_text = f'R² = {r2:.4f}\nMSE = {mse:.4f}\nExpl. Var = {explained_var:.4f}'
+            ax.text(0.05, 0.95, metrics_text, transform=ax.transAxes,
+                    fontsize=10, verticalalignment='top',
+                    bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+
+            # Add grid for better readability
+            ax.grid(True, linestyle='--', alpha=0.7)
+        else:
+            ax.text(0.5, 0.5, "No regression data available", ha="center", va="center")
+
+        self.cm_canvas.draw()
+
+        # Also clear the ROC curve plot since we're not using it for regression
+        self.roc_figure.clear()
+        ax = self.roc_figure.add_subplot(111)
+
+        # Create a residual plot (actual - predicted)
+        if len(y_test) > 0 and len(y_pred) > 0:
+            residuals = y_test - y_pred
+            ax.scatter(y_pred, residuals, alpha=0.7, color='green')
+            ax.axhline(y=0, color='r', linestyle='--')
+            ax.set_xlabel('Predicted Values')
+            ax.set_ylabel('Residuals')
+            ax.set_title('Residual Plot')
+            ax.grid(True, linestyle='--', alpha=0.7)
+        else:
+            ax.text(0.5, 0.5, "No regression data available", ha="center", va="center")
 
         self.roc_canvas.draw()
 
@@ -671,16 +972,43 @@ class ModelTrainingTab(QWidget):
                 # Clear existing items
                 self.target_combo.clear()
 
-                # Add metadata columns
-                metadata_columns = [col for col in feature_matrix.columns if col in ['concentration', 'antibiotic']]
+                # Add metadata columns - use a more flexible approach
+                important_metadata = ['concentration', 'antibiotic', 'label', 'class', 'target']
+                metadata_columns = []
+
+                # First check for exact matches
+                for col in feature_matrix.columns:
+                    if col in important_metadata:
+                        metadata_columns.append(col)
+
+                # Then check for case-insensitive matches if we didn't find any
+                if not metadata_columns:
+                    for col in feature_matrix.columns:
+                        if col.lower() in [meta.lower() for meta in important_metadata]:
+                            metadata_columns.append(col)
+
                 if metadata_columns:
                     self.target_combo.addItems(metadata_columns)
                     print(f"Added metadata columns to target dropdown: {metadata_columns}")
-                    # Don't show message box automatically - it can be annoying
-                    # QMessageBox.information(self, "Target Variables Available",
-                    #                      f"Found metadata columns that can be used as target variables: {', '.join(metadata_columns)}")
+                    # Store metadata columns for future use
+                    self.app_data["metadata_columns"] = metadata_columns
+                    # Show a message box to inform the user
+                    QMessageBox.information(self, "Target Variables Available",
+                                         f"Found metadata columns that can be used as target variables: {', '.join(metadata_columns)}")
                 else:
                     print("No metadata columns found in feature matrix")
+                    # If no metadata columns found, check all columns and suggest potential targets
+                    potential_targets = []
+                    for col in feature_matrix.columns:
+                        # Skip columns that look like features
+                        if not any(col.startswith(prefix) for prefix in ['basic_', 'peak_', 'shape_', 'derivative_', 'area_']):
+                            potential_targets.append(col)
+
+                    if potential_targets:
+                        print(f"Potential target columns: {potential_targets}")
+                        self.target_combo.addItems(potential_targets)
+                        QMessageBox.information(self, "Potential Target Variables",
+                                             f"No standard metadata columns found, but these columns might be usable as targets: {', '.join(potential_targets)}")
             else:
                 # Fallback to update_column_list if no feature_matrix
                 self.update_column_list()

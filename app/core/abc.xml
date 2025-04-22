@@ -1,0 +1,25 @@
+<root>
+    <file device="USTAT400" type="normal" version="2"/>
+    <title>Untitled</title>
+    <curves>
+        <curve>
+            <name></name>   
+            <technic id="CV"></technic>
+            <time>1,2,3,4,5</time>
+            <potential>e1,e2,e3,e4,e5</potential>
+            <i1>i1,i2,i3,i4,i5</i1>
+        </curve>
+    </curves>
+</root>
+
+
+
+
+
+
+
+
+
+
+
+

@@ -20,7 +20,7 @@ def load_data(file_path):
         try:
             df = pd.read_csv(file_path)
         except:
-            # Try with semicolon separator
+            # Case using ";" instead of ""
             df = pd.read_csv(file_path, sep=';')
 
         # Check if this is the special voltammetry format (columns are voltage values)
