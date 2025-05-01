@@ -301,14 +301,17 @@ class DataImportTab(QWidget):
 
             if is_voltammetry_format and len(voltage_columns) > 0:
                 # For voltammetry format, we don't need to select a label column from the data
-                # since we'll transform it to Potential/Current format
+                # since we'll transform it to Potential/Current format for visualization
                 QMessageBox.information(self, "Voltammetry Format Detected",
                                       f"Detected voltammetry format with {len(voltage_columns)} voltage columns. \n\n"
-                                      f"The data will be automatically converted to Potential/Current format.")
+                                      f"The data will be used directly for preprocessing and feature extraction, and converted to Potential/Current format only for visualization.")
 
                 # Store the dataframe temporarily
                 self.temp_df = df
                 self.is_voltammetry_format = True
+
+                # Store the original wide format data in app_data for direct use in preprocessing and feature extraction
+                self.app_data["original_wide_data"] = df.copy()
 
                 # Update label column dropdown with any non-voltage columns that might contain labels
                 self.label_column.clear()
@@ -522,9 +525,17 @@ class DataImportTab(QWidget):
 
             # First, load and transform the data
             if hasattr(self, 'temp_df') and self.is_voltammetry_format:
-                # For voltammetry format, we need to transform the data
-                print("Using voltammetry format data transformation")
+                # For voltammetry format, we need to store both the original wide format and the transformed long format
+                print("Using voltammetry format data")
+
+                # Store the original wide format data for preprocessing and feature extraction
+                if "original_wide_data" not in self.app_data:
+                    self.app_data["original_wide_data"] = self.temp_df.copy()
+                    print(f"Stored original wide format data with shape: {self.app_data['original_wide_data'].shape}")
+
+                # Transform to long format for visualization
                 df = self.transform_voltammetry_data(self.temp_df)
+                print(f"Transformed to long format for visualization with shape: {df.shape}")
             elif hasattr(self, 'temp_df'):
                 # Use the already loaded dataframe for standard format
                 df = self.temp_df.copy()
@@ -762,10 +773,14 @@ class DataImportTab(QWidget):
                     # Try with semicolon separator
                     original_df = pd.read_csv(file_path, sep=';')
 
-                # Transform the data using our new method
+                # Store the original wide format data for preprocessing and feature extraction
+                self.app_data["original_wide_data"] = original_df.copy()
+                print(f"Stored original wide format data with shape: {self.app_data['original_wide_data'].shape}")
+
+                # Transform the data using our new method for visualization
                 transformed_df = self.transform_voltammetry_data(original_df)
 
-                # Store the transformed dataset
+                # Store the transformed dataset for visualization
                 self.app_data["dataset"] = transformed_df
                 print(f"Transformed data: {len(transformed_df)} data points")
             else:

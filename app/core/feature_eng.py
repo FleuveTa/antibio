@@ -2,6 +2,7 @@ import numpy as np
 import pandas as pd
 from scipy import integrate
 import re
+from sklearn.decomposition import PCA
 
 
 def extract_voltammetric_features(df):
@@ -575,6 +576,143 @@ def extract_raw_features_from_samples(df):
     print(f"Output DataFrame shape: {raw_features_df.shape}")
     print("===================================\n")
     return raw_features_df
+
+
+def apply_pca_to_wide_data(df, n_components=None, variance_threshold=0.95):
+    """
+    Apply PCA to wide-format voltammetric data to reduce dimensionality.
+
+    Args:
+        df: DataFrame with voltage columns and metadata columns
+        n_components: Number of principal components to keep (if None, use variance_threshold)
+        variance_threshold: Minimum cumulative explained variance ratio to retain (default: 0.95)
+
+    Returns:
+        DataFrame with PCA components and metadata columns, PCA model
+    """
+    # Identify voltage columns and metadata columns
+    voltage_columns = []
+    metadata_columns = []
+
+    # First, filter out columns that should be skipped
+    columns_to_skip = ['path']
+
+    # Skip unnamed columns and columns with strange formats
+    for col in df.columns:
+        if 'unnamed' in str(col).lower() or 'unnamed:' in str(col).lower():
+            columns_to_skip.append(col)
+            print(f"Skipping unnamed column: {col}")
+        # Skip columns with strange scientific notation formats that aren't valid voltages
+        elif re.match(r'^-?\d+e[-+]\d+\.\d+', str(col)):
+            columns_to_skip.append(col)
+            print(f"Skipping column with strange format: {col}")
+
+    # First identify important metadata columns
+    important_metadata = ['concentration', 'antibiotic', 'label', 'class', 'target']
+    for col in df.columns:
+        if col in columns_to_skip:
+            continue
+
+        if str(col).lower() in [meta.lower() for meta in important_metadata]:
+            # Found an important metadata column - use the original column name
+            metadata_columns.append(col)
+            print(f"Found important metadata column: {col}")
+
+    # Then process remaining columns
+    for col in df.columns:
+        # Skip columns we've already processed
+        if col in metadata_columns or col in columns_to_skip:
+            continue
+
+        # Check if column name can be converted to a float (voltage point)
+        try:
+            # Try direct conversion
+            float(col)
+            voltage_columns.append(col)
+        except ValueError:
+            # Check for complex voltage format like "-0.795.1925"
+            if isinstance(col, str) and re.match(r'^-?\d+\.\d+(\.\d+)*$', col):
+                # Extract the first part as the voltage value
+                parts = col.split('.')
+                if len(parts) >= 2:
+                    try:
+                        float(f"{parts[0]}.{parts[1]}")
+                        voltage_columns.append(col)
+                    except ValueError:
+                        # Only add as metadata if it's not a column to skip
+                        if col not in columns_to_skip:
+                            metadata_columns.append(col)
+            # If not a voltage column, it might be a metadata column
+            elif col not in columns_to_skip:
+                metadata_columns.append(col)
+                print(f"Found additional metadata column: {col}")
+
+    print(f"Found {len(voltage_columns)} voltage columns and {len(metadata_columns)} metadata columns")
+
+    # Sort voltage columns by their numerical value for consistency
+    try:
+        sorted_voltage_columns = sorted(voltage_columns, key=lambda x:
+                                       float(x.split('.')[0] + '.' + x.split('.')[1])
+                                       if '.' in str(x) and len(x.split('.')) > 1
+                                       else float(x))
+        voltage_columns = sorted_voltage_columns
+    except Exception as e:
+        print(f"Error sorting voltage columns: {e}")
+
+    # Extract voltage data for PCA
+    X = df[voltage_columns].fillna(0).values
+
+    # Initialize PCA
+    if n_components is None:
+        # Start with all components and then filter based on explained variance
+        pca = PCA()
+    else:
+        # Use specified number of components
+        pca = PCA(n_components=n_components)
+
+    # Fit and transform the data
+    X_pca = pca.fit_transform(X)
+
+    # If n_components is None, determine number of components based on variance threshold
+    if n_components is None:
+        # Calculate cumulative explained variance
+        explained_variance_ratio = pca.explained_variance_ratio_
+        cumulative_variance = np.cumsum(explained_variance_ratio)
+
+        # Find number of components that explain at least variance_threshold of variance
+        n_components = np.argmax(cumulative_variance >= variance_threshold) + 1
+
+        # Ensure we have at least 3 components (even if first component explains >95% variance)
+        n_components = max(3, n_components)
+
+        # Print information about variance explained
+        print(f"Selected {n_components} components to explain at least {variance_threshold*100:.1f}% of variance")
+        print(f"First component explains {explained_variance_ratio[0]*100:.2f}% of variance")
+        if len(explained_variance_ratio) > 1:
+            print(f"Second component explains {explained_variance_ratio[1]*100:.2f}% of variance")
+        if len(explained_variance_ratio) > 2:
+            print(f"Third component explains {explained_variance_ratio[2]*100:.2f}% of variance")
+
+        # Create a new PCA model with the determined number of components
+        pca = PCA(n_components=n_components)
+        X_pca = pca.fit_transform(X)
+
+    # Create a new DataFrame with PCA components
+    pca_df = pd.DataFrame(X_pca, columns=[f"PC{i+1}" for i in range(n_components)])
+
+    # Add metadata columns
+    for col in metadata_columns:
+        pca_df[col] = df[col].values
+
+    # Add row index as a feature for tracking
+    pca_df['row_index'] = df.index
+
+    # Print explained variance information
+    print(f"PCA with {n_components} components explains {pca.explained_variance_ratio_.sum()*100:.2f}% of variance")
+    for i, ratio in enumerate(pca.explained_variance_ratio_):
+        print(f"PC{i+1}: {ratio*100:.2f}% of variance")
+
+    return pca_df, pca
 
 
 def select_features(feature_df, target=None, method="importance", threshold=0.2):

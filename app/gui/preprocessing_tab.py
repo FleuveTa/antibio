@@ -9,7 +9,7 @@ from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 from datetime import datetime
 
-from app.core.preprocessing import preprocess_data, apply_transformers
+from app.core.preprocessing import preprocess_wide_data
 from app.core.experiment_manager import ExperimentManager
 
 
@@ -145,10 +145,11 @@ class PreprocessingTab(QWidget):
         """Handle when tab is shown"""
         super().showEvent(event)
 
-        # Check if data is loaded and update UI accordingly
-        if "dataset" in self.app_data and self.app_data["dataset"] is not None:
+        # Check if original wide data is loaded and update UI accordingly
+        if "original_wide_data" in self.app_data and self.app_data["original_wide_data"] is not None:
             self.preprocess_btn.setEnabled(True)
             self.reset_btn.setEnabled(True)
+            print("Found original_wide_data for preprocessing")
 
             # Update scan combo box if voltammetry data is loaded
             if "voltammetry_row_indices" in self.app_data:
@@ -198,16 +199,20 @@ class PreprocessingTab(QWidget):
             self.plot_data("raw")
 
     def plot_data(self, plot_type):
-        if self.app_data.get("dataset") is None:
+        # Check if we have data to plot (either processed_wide_data, original_wide_data, or dataset as fallback)
+        if not ("processed_wide_data" in self.app_data or "original_wide_data" in self.app_data or "dataset" in self.app_data):
             return
 
         self.figure.clear()
         ax = self.figure.add_subplot(111)
 
-        # Use processed data if available, otherwise use original dataset
-        if "processed_data" in self.app_data and self.app_data["processed_data"] is not None:
-            df = self.app_data["processed_data"]
+        # Use processed wide data if available, otherwise use original wide data, or dataset as fallback
+        if "processed_wide_data" in self.app_data and self.app_data["processed_wide_data"] is not None:
+            df = self.app_data["processed_wide_data"]
             title_prefix = "Processed "
+        elif "original_wide_data" in self.app_data and self.app_data["original_wide_data"] is not None:
+            df = self.app_data["original_wide_data"]
+            title_prefix = "Original "
         else:
             df = self.app_data["dataset"]
             title_prefix = ""
@@ -215,32 +220,127 @@ class PreprocessingTab(QWidget):
         if plot_type == "raw":
             # Plotting for voltammetric data
 
-            # Always filter by scan to prevent lag
-            if self.scan_combo.isEnabled() and self.scan_combo.count() > 0 and "RowIndex" in df.columns:
-                selected_scan = self.scan_combo.currentText()
-                # Extract the scan number from the text (format: "Scan X")
-                scan_idx = int(selected_scan.split(" ")[1])
-                # Filter data for the selected scan
-                plot_df = df[df["RowIndex"] == scan_idx]
-                title_suffix = f" - Scan {scan_idx}"
+            # Check if we're working with wide format data (voltage columns) or long format data (Potential/Current columns)
+            if "Potential" in df.columns and "Current" in df.columns:
+                # Long format data - use existing code
+                # Always filter by scan to prevent lag
+                if self.scan_combo.isEnabled() and self.scan_combo.count() > 0 and "RowIndex" in df.columns:
+                    selected_scan = self.scan_combo.currentText()
+                    # Extract the scan number from the text (format: "Scan X")
+                    scan_idx = int(selected_scan.split(" ")[1])
+                    # Filter data for the selected scan
+                    plot_df = df[df["RowIndex"] == scan_idx]
+                    title_suffix = f" - Scan {scan_idx}"
+                else:
+                    # If no scan selection is available, just use a small subset of data
+                    # to prevent performance issues
+                    plot_df = df.head(100)  # Limit to first 100 points
+                    title_suffix = " (Limited View)"
+
+                # Extract x and y data for plotting
+                x_data = plot_df["Potential"]
+                y_data = plot_df["Current"]
             else:
-                # If no scan selection is available, just use a small subset of data
-                # to prevent performance issues
-                plot_df = df.head(100)  # Limit to first 100 points
-                title_suffix = " (Limited View)"
+                # Wide format data - voltage columns
+                # Select the first row (first scan) for plotting
+                if self.scan_combo.isEnabled() and self.scan_combo.count() > 0:
+                    selected_scan = self.scan_combo.currentText()
+                    # Extract the scan number from the text (format: "Scan X")
+                    scan_idx = int(selected_scan.split(" ")[1])
+                    # If scan_idx is within range of dataframe rows
+                    if scan_idx < len(df):
+                        # Select the row corresponding to the scan
+                        plot_df = df.iloc[[scan_idx]]
+                    else:
+                        # Default to first row
+                        plot_df = df.iloc[[0]]
+                    title_suffix = f" - Scan {scan_idx}"
+                else:
+                    # Default to first row
+                    plot_df = df.iloc[[0]]
+                    title_suffix = " - Scan 0"
+
+                # Extract voltage columns (numeric columns that are not metadata)
+                # Add 'Unnamed: 0' and other common non-voltage columns to the metadata list
+                metadata_cols = ['concentration', 'antibiotic', 'label', 'class', 'target', 'path', 'row_index',
+                               'unnamed: 0', 'index', 'id', 'sample_id', 'scan_id']
+
+                # Filter out columns that are likely not voltage values
+                voltage_cols = []
+                for col in plot_df.columns:
+                    # Skip metadata columns (case insensitive)
+                    if any(meta.lower() in str(col).lower() for meta in metadata_cols):
+                        continue
+
+                    # Try to convert to float to check if it's a numeric column
+                    try:
+                        # For columns like '-0.795.1925', take only the first part
+                        if isinstance(col, str) and col.count('.') > 1:
+                            parts = col.split('.')
+                            # Try to parse as "major.minor" format
+                            float(f"{parts[0]}.{parts[1]}")
+                        else:
+                            float(col)
+                        # If conversion succeeds, it's likely a voltage column
+                        voltage_cols.append(col)
+                    except (ValueError, TypeError):
+                        # Not a voltage column, skip it
+                        continue
+
+                print(f"Found {len(voltage_cols)} voltage columns for plotting")
+
+                # Sort voltage columns by their float values
+                try:
+                    # For columns with multiple dots, use only the first part for sorting
+                    def get_sort_value(col):
+                        if isinstance(col, str) and col.count('.') > 1:
+                            parts = col.split('.')
+                            return float(f"{parts[0]}.{parts[1]}")
+                        return float(col)
+
+                    voltage_cols = sorted(voltage_cols, key=get_sort_value)
+                except Exception as e:
+                    # If sorting fails, just use the columns as they are
+                    print(f"Warning: Could not sort voltage columns: {e}")
+
+                # Extract x and y data for plotting
+                x_data = []
+                y_data = []
+
+                # Process each voltage column
+                for col in voltage_cols:
+                    try:
+                        # Convert column name to float for x-axis
+                        if isinstance(col, str) and col.count('.') > 1:
+                            parts = col.split('.')
+                            x_val = float(f"{parts[0]}.{parts[1]}")
+                        else:
+                            x_val = float(col)
+
+                        # Get the current value for this voltage
+                        y_val = plot_df[col].values[0]
+
+                        # Add to our data arrays
+                        x_data.append(x_val)
+                        y_data.append(y_val)
+                    except Exception as e:
+                        print(f"Warning: Could not process column {col}: {e}")
+                        continue
+
+                print(f"Prepared {len(x_data)} data points for plotting")
 
             # Check if we should use line or scatter plot
             plot_style = self.plot_type_combo.currentText() if hasattr(self, 'plot_type_combo') else "Line Plot"
 
             # Create a more professional looking plot based on selected style
             if plot_style == "Line Plot":
-                ax.plot(plot_df["Potential"], plot_df["Current"], linewidth=2, color='#1f77b4')
+                ax.plot(x_data, y_data, linewidth=2, color='#1f77b4')
 
                 # Add a subtle shadow effect for depth
-                ax.plot(plot_df["Potential"], plot_df["Current"], linewidth=4, color='#1f77b4', alpha=0.2)
+                ax.plot(x_data, y_data, linewidth=4, color='#1f77b4', alpha=0.2)
 
-                # Plot peaks if available
-                if "Peaks" in plot_df.columns:
+                # Plot peaks if available (only for long format data)
+                if "Potential" in df.columns and "Current" in df.columns and "Peaks" in plot_df.columns:
                     peak_points = plot_df[plot_df["Peaks"] == True]
                     if not peak_points.empty:
                         ax.scatter(peak_points["Potential"], peak_points["Current"],
@@ -249,14 +349,14 @@ class PreprocessingTab(QWidget):
                                   label='Detected Peaks')
 
             elif plot_style == "Scatter Plot":
-                ax.scatter(plot_df["Potential"], plot_df["Current"], s=25, color='#1f77b4',
+                ax.scatter(x_data, y_data, s=25, color='#1f77b4',
                           alpha=0.7, edgecolors='white', linewidths=0.5)
 
                 # Add connecting line with low alpha for better visualization
-                ax.plot(plot_df["Potential"], plot_df["Current"], linewidth=1, color='#1f77b4', alpha=0.3)
+                ax.plot(x_data, y_data, linewidth=1, color='#1f77b4', alpha=0.3)
 
-                # Plot peaks if available
-                if "Peaks" in plot_df.columns:
+                # Plot peaks if available (only for long format data)
+                if "Potential" in df.columns and "Current" in df.columns and "Peaks" in plot_df.columns:
                     peak_points = plot_df[plot_df["Peaks"] == True]
                     if not peak_points.empty:
                         ax.scatter(peak_points["Potential"], peak_points["Current"],
@@ -265,11 +365,11 @@ class PreprocessingTab(QWidget):
                                   label='Detected Peaks')
 
             elif plot_style == "Line + Markers":
-                ax.plot(plot_df["Potential"], plot_df["Current"], linewidth=2, color='#1f77b4',
+                ax.plot(x_data, y_data, linewidth=2, color='#1f77b4',
                        marker='o', markersize=5, markerfacecolor='white', markeredgecolor='#1f77b4')
 
-                # Plot peaks if available
-                if "Peaks" in plot_df.columns:
+                # Plot peaks if available (only for long format data)
+                if "Potential" in df.columns and "Current" in df.columns and "Peaks" in plot_df.columns:
                     peak_points = plot_df[plot_df["Peaks"] == True]
                     if not peak_points.empty:
                         ax.scatter(peak_points["Potential"], peak_points["Current"],
@@ -278,13 +378,13 @@ class PreprocessingTab(QWidget):
                                   label='Detected Peaks')
 
             elif plot_style == "Step Plot":
-                ax.step(plot_df["Potential"], plot_df["Current"], linewidth=2, color='#1f77b4', where='post')
+                ax.step(x_data, y_data, linewidth=2, color='#1f77b4', where='post')
                 # Add points at the steps
-                ax.scatter(plot_df["Potential"], plot_df["Current"], s=20, color='#1f77b4',
+                ax.scatter(x_data, y_data, s=20, color='#1f77b4',
                           alpha=0.7, edgecolors='white', linewidths=0.5, zorder=10)
 
-                # Plot peaks if available
-                if "Peaks" in plot_df.columns:
+                # Plot peaks if available (only for long format data)
+                if "Potential" in df.columns and "Current" in df.columns and "Peaks" in plot_df.columns:
                     peak_points = plot_df[plot_df["Peaks"] == True]
                     if not peak_points.empty:
                         ax.scatter(peak_points["Potential"], peak_points["Current"],
@@ -352,8 +452,10 @@ class PreprocessingTab(QWidget):
         ax = event.inaxes
 
         # Get the data currently being displayed
-        if "processed_data" in self.app_data and self.app_data["processed_data"] is not None:
-            df = self.app_data["processed_data"]
+        if "processed_wide_data" in self.app_data and self.app_data["processed_wide_data"] is not None:
+            df = self.app_data["processed_wide_data"]
+        elif "original_wide_data" in self.app_data and self.app_data["original_wide_data"] is not None:
+            df = self.app_data["original_wide_data"]
         else:
             df = self.app_data.get("dataset")
 
@@ -371,7 +473,70 @@ class PreprocessingTab(QWidget):
 
         # Find the closest point to the cursor
         x, y = event.xdata, event.ydata
-        points = plot_df[["Potential", "Current"]].values
+
+        # Check if we're working with wide format data (voltage columns) or long format data (Potential/Current columns)
+        if "Potential" in df.columns and "Current" in df.columns:
+            # Long format data
+            points = plot_df[["Potential", "Current"]].values
+        else:
+            # Wide format data - voltage columns
+            # Add 'Unnamed: 0' and other common non-voltage columns to the metadata list
+            metadata_cols = ['concentration', 'antibiotic', 'label', 'class', 'target', 'path', 'row_index',
+                           'unnamed: 0', 'index', 'id', 'sample_id', 'scan_id']
+
+            # Filter out columns that are likely not voltage values
+            voltage_cols = []
+            for col in plot_df.columns:
+                # Skip metadata columns (case insensitive)
+                if any(meta.lower() in str(col).lower() for meta in metadata_cols):
+                    continue
+
+                # Try to convert to float to check if it's a numeric column
+                try:
+                    # For columns like '-0.795.1925', take only the first part
+                    if isinstance(col, str) and col.count('.') > 1:
+                        parts = col.split('.')
+                        # Try to parse as "major.minor" format
+                        float(f"{parts[0]}.{parts[1]}")
+                    else:
+                        float(col)
+                    # If conversion succeeds, it's likely a voltage column
+                    voltage_cols.append(col)
+                except (ValueError, TypeError):
+                    # Not a voltage column, skip it
+                    continue
+
+            # Create points array with x values (voltage) and y values (current)
+            x_values = []
+            y_values = []
+
+            # Process each voltage column
+            for col in voltage_cols:
+                try:
+                    # Convert column name to float for x-axis
+                    if isinstance(col, str) and col.count('.') > 1:
+                        parts = col.split('.')
+                        x_val = float(f"{parts[0]}.{parts[1]}")
+                    else:
+                        x_val = float(col)
+
+                    # Get the current value for this voltage
+                    y_val = plot_df[col].values[0]
+
+                    # Add to our data arrays
+                    x_values.append(x_val)
+                    y_values.append(y_val)
+                except Exception as e:
+                    # Skip this column if there's an error
+                    continue
+
+            # Create the points array
+            if len(x_values) > 0:
+                points = np.column_stack((x_values, y_values))
+            else:
+                # If no valid points, return an empty array
+                points = np.array([])
+
         if len(points) == 0:
             return
 
@@ -420,7 +585,13 @@ class PreprocessingTab(QWidget):
 
     def preprocess(self):
         """Apply preprocessing to the data"""
-        if self.app_data.get("dataset") is None:
+        # Check if we have original wide data to process
+        if "original_wide_data" in self.app_data and self.app_data["original_wide_data"] is not None:
+            # Use the original wide format data directly
+            data = self.app_data["original_wide_data"]
+            print(f"Found original_wide_data with shape: {data.shape}")
+            print(f"Using original_wide_data for preprocessing")
+        else:
             QMessageBox.warning(self, "Warning", "No data loaded. Please import data first.")
             return
 
@@ -440,17 +611,24 @@ class PreprocessingTab(QWidget):
         }
 
         try:
-            # Apply preprocessing and get transformers
-            self.app_data["processed_data"], transformers = preprocess_data(
-                self.app_data["dataset"],
-                "Voltammetric",
+            # Apply preprocessing directly on wide format data and get transformers
+            processed_wide_data, transformers = preprocess_wide_data(
+                data,
                 options
             )
+
+            # Store the processed wide data
+            self.app_data["processed_wide_data"] = processed_wide_data
+            print(f"Stored processed_wide_data with shape: {processed_wide_data.shape}")
+
+            # We're working directly with wide format data, no need to convert to long format
+            # Just use the processed wide data directly for visualization
+            print(f"Using processed_wide_data directly for visualization")
 
             # Save processed data
             processed_file_path = self.experiment_manager.save_processed_data(
                 current_experiment_id,
-                self.app_data["processed_data"],
+                self.app_data["processed_wide_data"],
                 "preprocessed"
             )
 
@@ -483,7 +661,7 @@ class PreprocessingTab(QWidget):
 
     def reset_processing(self):
         """Reset processed data and show original data"""
-        if "processed_data" in self.app_data:
-            self.app_data["processed_data"] = None
+        if "processed_wide_data" in self.app_data:
+            self.app_data["processed_wide_data"] = None
             self.plot_data("raw")
             QMessageBox.information(self, "Reset", "Reset to original data")
