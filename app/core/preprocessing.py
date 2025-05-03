@@ -70,33 +70,6 @@ def preprocess_data(df, options=None):
         processed_df["Current"] = detrend(processed_df["Current"].values)
         print("Đã áp dụng hiệu chỉnh đường cơ bản")
 
-    # Phát hiện đỉnh
-    if options.get("detect_peaks", True):
-        try:
-            processed_df = processed_df.sort_values(by="Potential").reset_index(drop=True)
-            
-            peaks, _ = find_peaks(processed_df["Current"], 
-                                 height=0.1*processed_df["Current"].max(),
-                                 distance=5, 
-                                 prominence=0.2*processed_df["Current"].std())
-            
-            processed_df["Peaks"] = False
-            if len(peaks) > 0:
-                processed_df.loc[peaks, "Peaks"] = True
-                print(f"Đã phát hiện {len(peaks)} đỉnh trong dữ liệu voltammetry")
-            
-            valleys, _ = find_peaks(-processed_df["Current"], 
-                                   height=0.1*(-processed_df["Current"]).max(),
-                                   distance=5, 
-                                   prominence=0.2*processed_df["Current"].std())
-            
-            if len(valleys) > 0:
-                processed_df.loc[valleys, "Peaks"] = True
-                print(f"Đã phát hiện {len(valleys)} thung lũng trong dữ liệu voltammetry")
-            
-        except Exception as e:
-            print(f"Lỗi trong quá trình phát hiện đỉnh: {e}")
-
     return processed_df, transformers
 
 

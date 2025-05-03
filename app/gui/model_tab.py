@@ -442,7 +442,7 @@ class ModelTrainingTab(QWidget):
 
             # Get all feature columns (exclude metadata columns)
             feature_cols = [col for col in feature_matrix.columns
-                           if col not in ['concentration', 'antibiotic', 'path', 'row_index']]
+                           if col.startswith(('FFT', 'PC', 'Window'))]
 
             # Check if we have any features
             if len(feature_cols) == 0:

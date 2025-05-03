@@ -84,6 +84,7 @@ class PreprocessingTab(QWidget):
 
         self.missing_cb = QCheckBox("Fill missing values")
         self.missing_cb.setToolTip("Replace missing values with column means")
+        self.missing_cb.setChecked(True)  # Enable by default
         cleaning_layout.addWidget(self.missing_cb, 0, 0)
 
         # Remove outliers option has been removed to preserve all data points
@@ -100,16 +101,19 @@ class PreprocessingTab(QWidget):
 
         self.smooth_cb = QCheckBox("Signal smoothing")
         self.smooth_cb.setToolTip("Apply Savitzky-Golay filter to reduce noise")
+        self.smooth_cb.setChecked(True)  # Enable by default
         signal_layout.addWidget(self.smooth_cb, 0, 0)
 
         self.baseline_cb = QCheckBox("Baseline correction")
         self.baseline_cb.setToolTip("Remove linear trend from signal")
+        self.baseline_cb.setChecked(True)  # Enable by default
         signal_layout.addWidget(self.baseline_cb, 0, 1)
 
-        self.peaks_cb = QCheckBox("Detect peaks")
-        self.peaks_cb.setToolTip("Detect peaks and valleys in the voltammetry data")
-        self.peaks_cb.setChecked(True)  # Enable by default
-        signal_layout.addWidget(self.peaks_cb, 1, 0)
+        # Peak detection has been removed as it's not needed
+        # self.peaks_cb = QCheckBox("Detect peaks")
+        # self.peaks_cb.setToolTip("Detect peaks and valleys in the voltammetry data")
+        # self.peaks_cb.setChecked(True)  # Enable by default
+        # signal_layout.addWidget(self.peaks_cb, 1, 0)
 
         signal_group.setLayout(signal_layout)
         preproc_layout.addWidget(signal_group, 1, 0, 1, 2)
@@ -171,7 +175,7 @@ class PreprocessingTab(QWidget):
                 self.missing_cb.setChecked("fill_missing" in steps)
                 self.smooth_cb.setChecked("smooth" in steps)
                 self.baseline_cb.setChecked("baseline_correction" in steps)
-                self.peaks_cb.setChecked("detect_peaks" in steps)  # Fixed variable name and step name
+                # self.peaks_cb.setChecked("detect_peaks" in steps)  # Fixed variable name and step name
 
                 # If processed data was saved, try to load it
                 current_experiment_id = self.app_data.get("current_experiment_id")
@@ -527,7 +531,7 @@ class PreprocessingTab(QWidget):
                     x_values.append(x_val)
                     y_values.append(y_val)
                 except Exception as e:
-                    # Skip this column if there's an error
+                    print(f"Warning: Could not process column {col}: {e}")
                     continue
 
             # Create the points array
@@ -606,8 +610,7 @@ class PreprocessingTab(QWidget):
             "remove_outliers": False,  # Remove outliers option has been disabled to preserve all data points
             "fill_missing": self.missing_cb.isChecked(),
             "smooth": self.smooth_cb.isChecked(),
-            "baseline_correction": self.baseline_cb.isChecked(),
-            "detect_peaks": self.peaks_cb.isChecked()  # Add peak detection option
+            "baseline_correction": self.baseline_cb.isChecked()
         }
 
         try:

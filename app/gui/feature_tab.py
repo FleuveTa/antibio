@@ -6,7 +6,7 @@ from PyQt5.QtCore import Qt, pyqtSignal
 from datetime import datetime
 import pandas as pd
 
-from app.core.feature_eng import apply_pca_to_wide_data
+from app.core.feature_eng import apply_pca_to_wide_data, apply_fft_to_wide_data, apply_windowed_integral_to_wide_data
 from app.core.preprocessing import preprocess_wide_data
 from app.core.experiment_manager import ExperimentManager
 
@@ -38,30 +38,19 @@ class FeatureEngineeringTab(QWidget):
         intro_label.setStyleSheet("font-size: 11pt; margin-bottom: 10px;")
         extraction_layout.addWidget(intro_label)
 
-        # Feature category selection
-        category_layout = QHBoxLayout()
-
-        # Category selection
-        category_layout.addWidget(QLabel("Feature Categories:"))
-        self.category_combo = QComboBox()
-        self.category_combo.addItems([
-            "All Categories",
-            "PCA Features"
-        ])
-        self.category_combo.currentIndexChanged.connect(self.update_feature_display)
-        category_layout.addWidget(self.category_combo)
-
-        extraction_layout.addLayout(category_layout)
-
         # Feature extraction method selection
         method_layout = QHBoxLayout()
         method_layout.addWidget(QLabel("Feature Extraction Method:"))
         self.method_combo = QComboBox()
         self.method_combo.addItems([
-            "PCA Features"  # Currently only PCA is available
+            "PCA Features",  # Currently only PCA is available
+            "FFT Features",   # Added Fast Fourier Transform option
+            "Windowed Integral Features" # Added Windowed Slicing Integral option
         ])
-        self.method_combo.setToolTip("'PCA Features' applies Principal Component Analysis to reduce dimensionality of raw voltage values.\nMore methods will be added in future updates.")
+        self.method_combo.setToolTip("'PCA Features' applies Principal Component Analysis to reduce dimensionality of raw voltage values.\n'FFT Features' applies Fast Fourier Transform to extract frequency domain features.\n'Windowed Integral Features' divides the signal into equal windows and calculates the area under the curve in each window.")
         method_layout.addWidget(self.method_combo)
+
+        extraction_layout.addLayout(method_layout)
 
         # Extract button
         self.extract_btn = QPushButton("Extract Features")
@@ -139,19 +128,37 @@ class FeatureEngineeringTab(QWidget):
 
     def extract_features(self):
         """Extract electrochemical features from the voltammetric data"""
-        # Check if we have original wide data to process
+        # Check if we have processed data to use
         print("\n==== CHECKING AVAILABLE DATA ====")
         print(f"app_data keys: {list(self.app_data.keys())}")
 
-        if "original_wide_data" in self.app_data and self.app_data["original_wide_data"] is not None:
-            # Use the original wide format data directly
+        # Prioritize using processed data if available
+        if "processed_wide_data" in self.app_data and self.app_data["processed_wide_data"] is not None:
+            # Use the processed wide format data
+            data = self.app_data["processed_wide_data"]
+            print(f"Found processed_wide_data with shape: {data.shape}")
+            print(f"processed_wide_data columns: {data.columns.tolist()}")
+            print(f"Using processed_wide_data for feature extraction")
+        elif "original_wide_data" in self.app_data and self.app_data["original_wide_data"] is not None:
+            # If no processed data, show warning and suggest preprocessing
+            print(f"No processed data found, but original_wide_data is available")
+            response = QMessageBox.question(
+                self, 
+                "No Preprocessed Data", 
+                "No preprocessed data found. It's recommended to preprocess your data before feature extraction.\n\nDo you want to continue with raw data?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No
+            )
+            if response == QMessageBox.No:
+                # User chose to go back and preprocess
+                return
+            
+            # User chose to continue with raw data
             data = self.app_data["original_wide_data"]
-            print(f"Found original_wide_data with shape: {data.shape}")
-            print(f"original_wide_data columns: {data.columns.tolist()}")
-            print(f"Using original_wide_data for feature extraction")
+            print(f"Using original_wide_data for feature extraction (not recommended)")
         else:
-            print("No original wide data found in app_data")
-            QMessageBox.warning(self, "No Data", "Please load data before extracting features.")
+            print("No data found in app_data")
+            QMessageBox.warning(self, "No Data", "Please load and preprocess data before extracting features.")
             return
         print("===================================\n")
 
@@ -162,146 +169,342 @@ class FeatureEngineeringTab(QWidget):
 
             # Currently only PCA is available as a feature extraction method
             print("\n==== FEATURE EXTRACTION METHOD ====\n")
-            print("Using PCA for feature extraction")
+            selected_method = self.method_combo.currentText()
+            print(f"Using {selected_method} for feature extraction")
             print("===================================\n")
 
             # Apply PCA to raw voltage values
-            QMessageBox.information(self, "PCA Features", "Applying Principal Component Analysis to reduce dimensionality of raw voltage values.")
-            print("Calling apply_pca_to_wide_data()")
+            if selected_method == "PCA Features":
+                QMessageBox.information(self, "PCA Features", "Applying Principal Component Analysis to reduce dimensionality of voltage values.")
+                print("Calling apply_pca_to_wide_data()")
 
-            # First, preprocess the data if needed
-            options = {
-                "fill_missing": True,  # Fill missing values
-                "smooth": True,  # Apply smoothing
-                "baseline_correction": True  # Apply baseline correction
-            }
+                # Apply PCA directly to data (which is already preprocessed)
+                # Use variance_threshold=0.95 to keep components that explain 95% of variance
+                # Ensure we keep at least 3 components to capture more information
+                feature_matrix, pca_model = apply_pca_to_wide_data(data, n_components=3, variance_threshold=0.95)
 
-            # Preprocess the data directly in wide format
-            preprocessed_data, _ = preprocess_wide_data(data, options)
-            QMessageBox.information(self, "Preprocessing", "Applied preprocessing to raw data: filled missing values, smoothing, and baseline correction.")
+                # Store the PCA model for future use
+                self.app_data["pca_model"] = pca_model
 
-            # Apply PCA to preprocessed data
-            # Use variance_threshold=0.95 to keep components that explain 95% of variance
-            # Ensure we keep at least 3 components to capture more information
-            feature_matrix, pca_model = apply_pca_to_wide_data(preprocessed_data, n_components=3, variance_threshold=0.95)
+                # Explicitly store the feature matrix in app_data for saving all samples
+                self.app_data["feature_matrix"] = feature_matrix
+                
+                print(f"PCA feature matrix shape: {feature_matrix.shape}")
+                QMessageBox.information(self, "PCA Complete",
+                                      f"PCA reduced dimensions from {len(data.columns)} to {len(feature_matrix.columns) - len([col for col in feature_matrix.columns if col in ['concentration', 'antibiotic', 'row_index']])} components.")
 
-            # Store the PCA model for future use
-            self.app_data["pca_model"] = pca_model
+                if feature_matrix.empty:
+                    QMessageBox.warning(self, "Error", "Could not extract features from the data. Please check the data format.")
+                    return
 
-            print(f"PCA feature matrix shape: {feature_matrix.shape}")
-            QMessageBox.information(self, "PCA Complete",
-                                  f"PCA reduced dimensions from {len(preprocessed_data.columns)} to {len(feature_matrix.columns) - len([col for col in feature_matrix.columns if col in ['concentration', 'antibiotic', 'row_index']])} components.")
+                # Use a more flexible approach to identify metadata columns
+                important_metadata = ['concentration', 'antibiotic', 'label', 'class', 'target']
+                metadata_cols = []
 
-            if feature_matrix.empty:
-                QMessageBox.warning(self, "Error", "Could not extract features from the data. Please check the data format.")
-                return
-
-            # Store both the feature matrix and a flattened version for the UI
-            self.app_data["feature_matrix"] = feature_matrix
-
-            # Debug print to verify feature matrix
-            print("\n==== FEATURE EXTRACTION COMPLETE ====")
-            print(f"Feature matrix shape: {feature_matrix.shape}")
-            print(f"Feature matrix columns: {feature_matrix.columns.tolist()}")
-
-            # Use a more flexible approach to identify metadata columns
-            important_metadata = ['concentration', 'antibiotic', 'label', 'class', 'target']
-            metadata_cols = []
-
-            # First check for exact matches
-            for col in feature_matrix.columns:
-                if col in important_metadata:
-                    metadata_cols.append(col)
-
-            # Then check for case-insensitive matches if we didn't find any
-            if not metadata_cols:
+                # First check for exact matches
                 for col in feature_matrix.columns:
-                    if col.lower() in [meta.lower() for meta in important_metadata]:
+                    if col in important_metadata:
                         metadata_cols.append(col)
 
-            # If still no metadata columns, look for any non-feature columns
-            if not metadata_cols:
-                for col in feature_matrix.columns:
-                    if not any(col.startswith(prefix) for prefix in ['basic_', 'peak_', 'shape_', 'derivative_', 'area_']):
-                        if col != 'path' and col != 'row_index':  # Skip path and row_index columns
+                # Then check for case-insensitive matches if we didn't find any
+                if not metadata_cols:
+                    for col in feature_matrix.columns:
+                        if col.lower() in [meta.lower() for meta in important_metadata]:
                             metadata_cols.append(col)
 
-            print(f"Metadata columns: {metadata_cols}")
-            print("===================================\n")
+                # If still no metadata columns, look for any non-feature columns
+                if not metadata_cols:
+                    for col in feature_matrix.columns:
+                        if not any(col.startswith(prefix) for prefix in ['basic_', 'peak_', 'shape_', 'derivative_', 'area_']):
+                            if col != 'path' and col != 'row_index':  # Skip path and row_index columns
+                                metadata_cols.append(col)
 
-            # Store all samples' features for display in the UI
-            # We'll create a dictionary where keys are sample indices and values are feature dictionaries
-            all_samples_features = {}
+                print(f"Metadata columns: {metadata_cols}")
+                print("===================================\n")
 
-            # For each sample (row) in the feature matrix
-            for idx in range(len(feature_matrix)):
-                sample_features = {}
-                # Extract feature values for this sample
+                # Store all samples' features for display in the UI
+                # We'll create a dictionary where keys are sample indices and values are feature dictionaries
+                all_samples_features = {}
+
+                # For each sample (row) in the feature matrix
+                for idx in range(len(feature_matrix)):
+                    sample_features = {}
+                    # Extract feature values for this sample
+                    for col in feature_matrix.columns:
+                        if col not in metadata_cols and col != 'path' and col != 'row_index':
+                            sample_features[col] = feature_matrix[col].iloc[idx]
+
+                    # Add metadata for this sample
+                    sample_metadata = {}
+                    for col in metadata_cols:
+                        if col in feature_matrix.columns:
+                            sample_metadata[col] = feature_matrix[col].iloc[idx]
+
+                    # Store features with metadata
+                    all_samples_features[idx] = {
+                        'features': sample_features,
+                        'metadata': sample_metadata
+                    }
+
+                # Store all samples' features
+                self.app_data["all_samples_features"] = all_samples_features
+
+                # For backward compatibility, use the first sample's features for the UI
+                if all_samples_features and 0 in all_samples_features:
+                    self.app_data["features"] = all_samples_features[0]['features']
+                else:
+                    # Fallback to empty dictionary if no samples
+                    self.app_data["features"] = {}
+
+                # DIRECT APPROACH: Also store the metadata columns separately for easy access
+                self.app_data["metadata_columns"] = metadata_cols
+
+                # Show summary of extracted features
+                num_samples = len(feature_matrix)
+                num_features = len(feature_matrix.columns) - len(metadata_cols) - sum(1 for col in feature_matrix.columns if col in ['path', 'row_index'])
+
+                # Create a more detailed message about feature extraction
+                message = f"Successfully extracted {num_features} features from {num_samples} samples.\n\n"
+                message += f"Metadata columns preserved: {metadata_cols}\n\n"
+
+                # Add information about PCA feature extraction
+                message += "Principal Component Analysis (PCA) was applied to reduce dimensionality.\n"
+                if "pca_model" in self.app_data:
+                    pca_model = self.app_data["pca_model"]
+                    message += f"PCA reduced dimensions to {pca_model.n_components_} components, explaining {pca_model.explained_variance_ratio_.sum()*100:.2f}% of variance.\n\n"
+
+                    # Add information about top components
+                    message += "Top 5 principal components and their explained variance:\n"
+                    for i in range(min(5, pca_model.n_components_)):
+                        message += f"PC{i+1}: {pca_model.explained_variance_ratio_[i]*100:.2f}% of variance\n"
+                    message += "\n"
+                else:
+                    message += "PCA was applied to extract the most important components.\n\n"
+
+                message += "The feature matrix is now ready for model training.\n\n"
+                message += f"These metadata columns can be used as target variables in the Model Training tab."
+
+                QMessageBox.information(
+                    self,
+                    "Feature Extraction Complete",
+                    message
+                )
+
+                # Update feature display
+                self.update_feature_display()
+
+                # Enable save button
+                self.save_btn.setEnabled(True)
+            elif selected_method == "FFT Features":
+                QMessageBox.information(self, "FFT Features", "Applying Fast Fourier Transform to extract frequency domain features.")
+                print("Calling apply_fft_to_wide_data()")
+
+                # Apply FFT directly to data (which is already preprocessed)
+                feature_matrix, fft_info = apply_fft_to_wide_data(data, n_components=10)
+                
+                # Store the FFT information for future use
+                self.app_data["fft_info"] = fft_info
+
+                # Explicitly store the feature matrix in app_data for saving all samples
+                self.app_data["feature_matrix"] = feature_matrix
+                
+                print(f"FFT feature matrix shape: {feature_matrix.shape}")
+                QMessageBox.information(self, "FFT Complete",
+                                      f"FFT extracted {len(feature_matrix.columns)} frequency domain features.")
+
+                if feature_matrix.empty:
+                    QMessageBox.warning(self, "Error", "Could not extract features from the data. Please check the data format.")
+                    return
+
+                # Use a more flexible approach to identify metadata columns
+                important_metadata = ['concentration', 'antibiotic', 'label', 'class', 'target']
+                metadata_cols = []
+
+                # First check for exact matches
                 for col in feature_matrix.columns:
-                    if col not in metadata_cols and col != 'path' and col != 'row_index':
-                        sample_features[col] = feature_matrix[col].iloc[idx]
+                    if col in important_metadata:
+                        metadata_cols.append(col)
 
-                # Add metadata for this sample
-                sample_metadata = {}
-                for col in metadata_cols:
-                    if col in feature_matrix.columns:
-                        sample_metadata[col] = feature_matrix[col].iloc[idx]
+                # Then check for case-insensitive matches if we didn't find any
+                if not metadata_cols:
+                    for col in feature_matrix.columns:
+                        if col.lower() in [meta.lower() for meta in important_metadata]:
+                            metadata_cols.append(col)
 
-                # Store features with metadata
-                all_samples_features[idx] = {
-                    'features': sample_features,
-                    'metadata': sample_metadata
-                }
+                # If still no metadata columns, look for any non-feature columns
+                if not metadata_cols:
+                    for col in feature_matrix.columns:
+                        if not any(col.startswith(prefix) for prefix in ['basic_', 'peak_', 'shape_', 'derivative_', 'area_']):
+                            if col != 'path' and col != 'row_index':  # Skip path and row_index columns
+                                metadata_cols.append(col)
 
-            # Store all samples' features
-            self.app_data["all_samples_features"] = all_samples_features
+                print(f"Metadata columns: {metadata_cols}")
+                print("===================================\n")
 
-            # For backward compatibility, use the first sample's features for the UI
-            if all_samples_features and 0 in all_samples_features:
-                self.app_data["features"] = all_samples_features[0]['features']
-            else:
-                # Fallback to empty dictionary if no samples
-                self.app_data["features"] = {}
+                # Store all samples' features for display in the UI
+                # We'll create a dictionary where keys are sample indices and values are feature dictionaries
+                all_samples_features = {}
 
-            # DIRECT APPROACH: Also store the metadata columns separately for easy access
-            self.app_data["metadata_columns"] = metadata_cols
+                # For each sample (row) in the feature matrix
+                for idx in range(len(feature_matrix)):
+                    sample_features = {}
+                    # Extract feature values for this sample
+                    for col in feature_matrix.columns:
+                        if col not in metadata_cols and col != 'path' and col != 'row_index':
+                            sample_features[col] = feature_matrix[col].iloc[idx]
 
-            # Show summary of extracted features
-            num_samples = len(feature_matrix)
-            num_features = len(feature_matrix.columns) - len(metadata_cols) - sum(1 for col in feature_matrix.columns if col in ['path', 'row_index'])
+                    # Add metadata for this sample
+                    sample_metadata = {}
+                    for col in metadata_cols:
+                        if col in feature_matrix.columns:
+                            sample_metadata[col] = feature_matrix[col].iloc[idx]
 
-            # Create a more detailed message about feature extraction
-            message = f"Successfully extracted {num_features} features from {num_samples} samples.\n\n"
-            message += f"Metadata columns preserved: {metadata_cols}\n\n"
+                    # Store features with metadata
+                    all_samples_features[idx] = {
+                        'features': sample_features,
+                        'metadata': sample_metadata
+                    }
 
-            # Add information about PCA feature extraction
-            message += "Principal Component Analysis (PCA) was applied to reduce dimensionality.\n"
-            if "pca_model" in self.app_data:
-                pca_model = self.app_data["pca_model"]
-                message += f"PCA reduced dimensions to {pca_model.n_components_} components, explaining {pca_model.explained_variance_ratio_.sum()*100:.2f}% of variance.\n\n"
+                # Store all samples' features
+                self.app_data["all_samples_features"] = all_samples_features
 
-                # Add information about top components
-                message += "Top 5 principal components and their explained variance:\n"
-                for i in range(min(5, pca_model.n_components_)):
-                    message += f"PC{i+1}: {pca_model.explained_variance_ratio_[i]*100:.2f}% of variance\n"
-                message += "\n"
-            else:
-                message += "PCA was applied to extract the most important components.\n\n"
+                # For backward compatibility, use the first sample's features for the UI
+                if all_samples_features and 0 in all_samples_features:
+                    self.app_data["features"] = all_samples_features[0]['features']
+                else:
+                    # Fallback to empty dictionary if no samples
+                    self.app_data["features"] = {}
 
-            message += "The feature matrix is now ready for model training.\n\n"
-            message += f"These metadata columns can be used as target variables in the Model Training tab."
+                # DIRECT APPROACH: Also store the metadata columns separately for easy access
+                self.app_data["metadata_columns"] = metadata_cols
 
-            QMessageBox.information(
-                self,
-                "Feature Extraction Complete",
-                message
-            )
+                # Show summary of extracted features
+                num_samples = len(feature_matrix)
+                num_features = len(feature_matrix.columns) - len(metadata_cols) - sum(1 for col in feature_matrix.columns if col in ['path', 'row_index'])
 
-            # Update feature display
-            self.update_feature_display()
+                # Create a more detailed message about feature extraction
+                message = f"Successfully extracted {num_features} features from {num_samples} samples.\n\n"
+                message += f"Metadata columns preserved: {metadata_cols}\n\n"
 
-            # Enable save button
-            self.save_btn.setEnabled(True)
+                message += "The feature matrix is now ready for model training.\n\n"
+                message += f"These metadata columns can be used as target variables in the Model Training tab."
+
+                QMessageBox.information(
+                    self,
+                    "Feature Extraction Complete",
+                    message
+                )
+
+                # Update feature display
+                self.update_feature_display()
+
+                # Enable save button
+                self.save_btn.setEnabled(True)
+            elif selected_method == "Windowed Integral Features":
+                QMessageBox.information(self, "Windowed Integral Features", "Applying windowed integral to extract features.")
+                print("Calling apply_windowed_integral_to_wide_data()")
+
+                # Apply windowed integral directly to data (which is already preprocessed)
+                feature_matrix, windowed_info = apply_windowed_integral_to_wide_data(data, n_windows=10)
+                
+                # Store the windowed information for future use
+                self.app_data["windowed_info"] = windowed_info
+
+                # Explicitly store the feature matrix in app_data for saving all samples
+                self.app_data["feature_matrix"] = feature_matrix
+                
+                print(f"Windowed Integral feature matrix shape: {feature_matrix.shape}")
+                QMessageBox.information(self, "Windowed Integral Complete",
+                                      f"Windowed Integral extracted {len(feature_matrix.columns)} features.")
+
+                if feature_matrix.empty:
+                    QMessageBox.warning(self, "Error", "Could not extract features from the data. Please check the data format.")
+                    return
+
+                # Use a more flexible approach to identify metadata columns
+                important_metadata = ['concentration', 'antibiotic', 'label', 'class', 'target']
+                metadata_cols = []
+
+                # First check for exact matches
+                for col in feature_matrix.columns:
+                    if col in important_metadata:
+                        metadata_cols.append(col)
+
+                # Then check for case-insensitive matches if we didn't find any
+                if not metadata_cols:
+                    for col in feature_matrix.columns:
+                        if col.lower() in [meta.lower() for meta in important_metadata]:
+                            metadata_cols.append(col)
+
+                # If still no metadata columns, look for any non-feature columns
+                if not metadata_cols:
+                    for col in feature_matrix.columns:
+                        if not any(col.startswith(prefix) for prefix in ['basic_', 'peak_', 'shape_', 'derivative_', 'area_']):
+                            if col != 'path' and col != 'row_index':  # Skip path and row_index columns
+                                metadata_cols.append(col)
+
+                print(f"Metadata columns: {metadata_cols}")
+                print("===================================\n")
+
+                # Store all samples' features for display in the UI
+                # We'll create a dictionary where keys are sample indices and values are feature dictionaries
+                all_samples_features = {}
+
+                # For each sample (row) in the feature matrix
+                for idx in range(len(feature_matrix)):
+                    sample_features = {}
+                    # Extract feature values for this sample
+                    for col in feature_matrix.columns:
+                        if col not in metadata_cols and col != 'path' and col != 'row_index':
+                            sample_features[col] = feature_matrix[col].iloc[idx]
+
+                    # Add metadata for this sample
+                    sample_metadata = {}
+                    for col in metadata_cols:
+                        if col in feature_matrix.columns:
+                            sample_metadata[col] = feature_matrix[col].iloc[idx]
+
+                    # Store features with metadata
+                    all_samples_features[idx] = {
+                        'features': sample_features,
+                        'metadata': sample_metadata
+                    }
+
+                # Store all samples' features
+                self.app_data["all_samples_features"] = all_samples_features
+
+                # For backward compatibility, use the first sample's features for the UI
+                if all_samples_features and 0 in all_samples_features:
+                    self.app_data["features"] = all_samples_features[0]['features']
+                else:
+                    # Fallback to empty dictionary if no samples
+                    self.app_data["features"] = {}
+
+                # DIRECT APPROACH: Also store the metadata columns separately for easy access
+                self.app_data["metadata_columns"] = metadata_cols
+
+                # Show summary of extracted features
+                num_samples = len(feature_matrix)
+                num_features = len(feature_matrix.columns) - len(metadata_cols) - sum(1 for col in feature_matrix.columns if col in ['path', 'row_index'])
+
+                # Create a more detailed message about feature extraction
+                message = f"Successfully extracted {num_features} features from {num_samples} samples.\n\n"
+                message += f"Metadata columns preserved: {metadata_cols}\n\n"
+
+                message += "The feature matrix is now ready for model training.\n\n"
+                message += f"These metadata columns can be used as target variables in the Model Training tab."
+
+                QMessageBox.information(
+                    self,
+                    "Feature Extraction Complete",
+                    message
+                )
+
+                # Update feature display
+                self.update_feature_display()
+
+                # Enable save button
+                self.save_btn.setEnabled(True)
 
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Error extracting features: {str(e)}")
@@ -374,32 +577,93 @@ class FeatureEngineeringTab(QWidget):
             # Just use the default features (first sample)
             features = self.app_data["features"]
 
-        selected_category = self.category_combo.currentText()
+        selected_category = self.method_combo.currentText()
 
-        # For PCA features, we need to handle differently since they're in a different format
-        # Check if we have a feature matrix with PC columns
-        if "feature_matrix" in self.app_data and any(col.startswith("PC") for col in self.app_data["feature_matrix"].columns):
-            # Create a dictionary of PCA features for display
-            pca_features = {}
+        # Handle different feature extraction methods differently
+        if "feature_matrix" in self.app_data:
             feature_matrix = self.app_data["feature_matrix"]
-
-            # Count PC columns for display
-            pc_count = sum(1 for col in feature_matrix.columns if col.startswith("PC"))
-            pca_features["Number of Principal Components"] = str(pc_count)
-
-            # Add PCA model information if available
-            if "pca_model" in self.app_data:
-                pca_model = self.app_data["pca_model"]
-                pca_features["Total Explained Variance"] = f"{pca_model.explained_variance_ratio_.sum()*100:.2f}%"
-
-                # Add individual component variances
-                for i, ratio in enumerate(pca_model.explained_variance_ratio_):
-                    pca_features[f"PC{i+1} Explained Variance"] = f"{ratio*100:.2f}%"
-
-            # Use PCA features instead of the original features
-            filtered_features = pca_features
+            filtered_features = {}
+            
+            # Identify metadata columns to exclude
+            metadata_cols = ['concentration', 'antibiotic', 'label', 'class', 'target', 'path', 'row_index']
+            
+            # For PCA features
+            if any(col.startswith("PC") for col in feature_matrix.columns):
+                # Create a dictionary of PCA features for display
+                pca_features = {}
+                
+                # Count PC columns for display
+                pc_count = sum(1 for col in feature_matrix.columns if col.startswith("PC"))
+                pca_features["Number of Principal Components"] = str(pc_count)
+                
+                # Add PCA model information if available
+                if "pca_model" in self.app_data:
+                    pca_model = self.app_data["pca_model"]
+                    pca_features["Total Explained Variance"] = f"{pca_model.explained_variance_ratio_.sum()*100:.2f}%"
+                    
+                    # Add individual component variances
+                    for i, ratio in enumerate(pca_model.explained_variance_ratio_):
+                        pca_features[f"PC{i+1} Explained Variance"] = f"{ratio*100:.2f}%"
+                
+                # Use PCA features instead of the original features
+                filtered_features = pca_features
+            
+            # For FFT features
+            elif any(col.startswith("FFT") for col in feature_matrix.columns):
+                # Create a dictionary of FFT features for display
+                fft_features = {}
+                
+                # Count FFT components for display
+                fft_count = sum(1 for col in feature_matrix.columns if col.startswith("FFT"))
+                fft_features["Number of FFT Components"] = str(fft_count)
+                
+                # Add FFT info if available
+                if "fft_info" in self.app_data:
+                    fft_info = self.app_data["fft_info"]
+                    fft_features["Data Points"] = str(fft_info.get("n_points", "Unknown"))
+                    fft_features["Components Extracted"] = str(fft_info.get("n_components", "Unknown"))
+                
+                # Add individual FFT components (only first few for brevity)
+                max_display = min(5, fft_count)
+                for i in range(max_display):
+                    component_name = f"FFT{i+1}"
+                    if component_name in feature_matrix.columns:
+                        fft_features[f"{component_name} (Sample Mean)"] = f"{feature_matrix[component_name].mean():.4f}"
+                
+                filtered_features = fft_features
+                
+            # For Windowed Integral features
+            elif any(col.startswith("Window") for col in feature_matrix.columns):
+                # Create a dictionary of Windowed Integral features for display
+                window_features = {}
+                
+                # Count Window components for display
+                window_count = sum(1 for col in feature_matrix.columns if col.startswith("Window"))
+                window_features["Number of Windows"] = str(window_count)
+                
+                # Add Windowed Integral info if available
+                if "windowed_info" in self.app_data:
+                    window_info = self.app_data["windowed_info"]
+                    window_features["Data Points"] = str(window_info.get("n_points", "Unknown"))
+                    window_features["Normalized"] = "Yes" if window_info.get("normalized", False) else "No"
+                
+                # Add individual window information (only first few for brevity)
+                max_display = min(5, window_count)
+                for i in range(max_display):
+                    window_name = f"Window{i+1}"
+                    if window_name in feature_matrix.columns:
+                        window_features[f"{window_name} (Sample Mean)"] = f"{feature_matrix[window_name].mean():.4f}"
+                
+                filtered_features = window_features
+                
+            # If no specific feature format is recognized but feature_matrix exists
+            else:
+                # Filter out metadata columns for display
+                feature_cols = [col for col in feature_matrix.columns if col not in metadata_cols]
+                for col in feature_cols:
+                    filtered_features[col] = f"{feature_matrix[col].mean():.4f} (mean)"
         else:
-            # Filter features by category (for backward compatibility)
+            # Use the traditional approach for backward compatibility
             if selected_category == "All Categories":
                 filtered_features = features
             else:
@@ -420,13 +684,17 @@ class FeatureEngineeringTab(QWidget):
             # Color-code rows by category
             if "PC" in key or "Explained Variance" in key or "Principal Components" in key:
                 color = "#e3f2fd"  # Light blue for PCA features
+            elif "FFT" in key or "Components" in key:
+                color = "#e8f5e9"  # Light green for FFT features
+            elif "Window" in key:
+                color = "#fff8e1"  # Light yellow for Windowed Integral features
             else:
                 color = "#ffffff"  # White for other features
 
-            for j in range(4):
-                item = self.feature_table.item(i, j)
-                if item:
-                    item.setBackground(QColor(color))
+            # Set background color for the cell
+            item = self.feature_table.item(i, 0)
+            if item:
+                item.setBackground(QColor(color))
 
         # Resize rows to content
         self.feature_table.resizeRowsToContents()
