@@ -7,6 +7,7 @@ from app.gui.preprocessing_tab import PreprocessingTab
 from app.gui.feature_tab import FeatureEngineeringTab
 from app.gui.model_tab import ModelTrainingTab
 from app.gui.results_tab import ResultsVisualizationTab
+from app.gui.prediction_tab import PredictionTab
 
 
 class PredictionModuleWidget(QWidget):
@@ -35,6 +36,12 @@ class PredictionModuleWidget(QWidget):
         title_label.setAlignment(Qt.AlignCenter)
         header_layout.addWidget(title_label)
 
+        # Predict button for quick access
+        self.predict_btn = QPushButton(" Go to Predict")
+        self.predict_btn.setStyleSheet("font-weight: bold; background-color: #e6f2ff;")
+        self.predict_btn.clicked.connect(lambda: self.tabs.setCurrentIndex(5))  # Jump to Predict tab
+        header_layout.addWidget(self.predict_btn)
+
         # Empty widget for symmetry
         spacer = QPushButton("")
         spacer.setEnabled(False)
@@ -53,6 +60,7 @@ class PredictionModuleWidget(QWidget):
         self.feature_tab = FeatureEngineeringTab(self.app_data)
         self.model_tab = ModelTrainingTab(self.app_data)
         self.results_tab = ResultsVisualizationTab(self.app_data)
+        self.prediction_tab = PredictionTab(self.app_data)  # New tab for prediction with trained models
 
         # Add tabs to widget
         self.tabs.addTab(self.data_tab, "Data Import")
@@ -60,18 +68,21 @@ class PredictionModuleWidget(QWidget):
         self.tabs.addTab(self.feature_tab, "Feature Extraction")
         self.tabs.addTab(self.model_tab, "Model Training")
         self.tabs.addTab(self.results_tab, "Results & Analysis")
+        self.tabs.addTab(self.prediction_tab, "Predict New Samples")  # New tab for prediction
 
         # Connect signals
         self.data_tab.data_loaded.connect(self.enable_preprocess_tab)
         self.preprocess_tab.preprocessing_done.connect(self.enable_feature_tab)
         self.feature_tab.features_ready.connect(self.enable_model_tab)
         self.model_tab.model_ready.connect(self.enable_results_tab)
+        self.results_tab.analysis_done.connect(self.enable_prediction_tab)  # Enable prediction tab after analysis
 
         # Initially disable tabs that require previous steps
         self.tabs.setTabEnabled(1, False)  # Preprocessing tab
         self.tabs.setTabEnabled(2, False)  # Feature tab
         self.tabs.setTabEnabled(3, False)  # Model tab
         self.tabs.setTabEnabled(4, False)  # Results tab
+        self.tabs.setTabEnabled(5, True)   # Prediction tab - Enable by default
 
         layout.addWidget(self.tabs)
         self.setLayout(layout)
@@ -113,3 +124,9 @@ class PredictionModuleWidget(QWidget):
         self.tabs.setTabEnabled(4, enabled)
         if enabled:
             self.tabs.setCurrentIndex(4)
+
+    def enable_prediction_tab(self, enabled):
+        """Enable the prediction tab when model is ready"""
+        self.tabs.setTabEnabled(5, enabled)
+        if enabled:
+            self.tabs.setCurrentIndex(5)

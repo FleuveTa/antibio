@@ -43,55 +43,29 @@ class DataImportTab(QWidget):
         exp_select_group = QGroupBox("Experiment Management")
         exp_select_layout = QVBoxLayout()
 
-        # Radio button layout
-        radio_layout = QHBoxLayout()
+        # Title and description for creating new experiments
+        title_label = QLabel("Create a New Experiment")
+        title_label.setStyleSheet("font-size: 14px; font-weight: bold;")
+        exp_select_layout.addWidget(title_label)
 
-        self.new_exp_radio = QRadioButton("New Experiment")
-        self.new_exp_radio.setChecked(True)
-        self.new_exp_radio.toggled.connect(self.toggle_experiment_mode)
-        self.new_exp_radio.setStyleSheet("font-weight: bold;")
-        radio_layout.addWidget(self.new_exp_radio)
+        desc_label = QLabel(
+            "Create a new experiment to analyze voltammetric data. "
+            "Each experiment contains data, preprocessing steps, features, and models."
+        )
+        desc_label.setWordWrap(True)
+        exp_select_layout.addWidget(desc_label)
 
-        self.load_exp_radio = QRadioButton("Load Existing Experiment")
-        self.load_exp_radio.toggled.connect(self.toggle_experiment_mode)
-        self.load_exp_radio.setStyleSheet("font-weight: bold;")
-        radio_layout.addWidget(self.load_exp_radio)
-
-        exp_select_layout.addLayout(radio_layout)
-
-        # Experiment selection controls
-        exp_controls = QHBoxLayout()
-
-        self.exp_combo = QComboBox()
-        self.exp_combo.setEnabled(False)
-        self.exp_combo.currentIndexChanged.connect(self.experiment_selected)
-        self.exp_combo.setMinimumWidth(250)  # Make the dropdown wider
-        exp_controls.addWidget(self.exp_combo, 3)  # Give it more space
-
-        self.refresh_btn = QPushButton("🔄")
-        self.refresh_btn.setToolTip("Refresh experiment list")
-        self.refresh_btn.setEnabled(False)
-        self.refresh_btn.clicked.connect(self.load_experiments)
-        self.refresh_btn.setMaximumWidth(30)  # Make it compact
-        exp_controls.addWidget(self.refresh_btn, 1)
-
-        self.delete_btn = QPushButton("🗑️")
-        self.delete_btn.setToolTip("Delete selected experiment")
-        self.delete_btn.setEnabled(False)
-        self.delete_btn.clicked.connect(self.delete_experiment)
-        self.delete_btn.setMaximumWidth(30)  # Make it compact
-        self.delete_btn.setStyleSheet("background-color: #ffcccc;")
-        exp_controls.addWidget(self.delete_btn, 1)
-
-        self.db_view_btn = QPushButton("📂")
+        # Database viewer button
+        db_layout = QHBoxLayout()
+        db_layout.addStretch()
+        
+        self.db_view_btn = QPushButton("📂 View Database")
         self.db_view_btn.setToolTip("View database structure")
         self.db_view_btn.clicked.connect(self.view_database)
-        self.db_view_btn.setMaximumWidth(30)  # Make it compact
         self.db_view_btn.setStyleSheet("background-color: #e6f2ff;")
-        exp_controls.addWidget(self.db_view_btn, 1)
-
-        exp_select_layout.addLayout(exp_controls)
-
+        db_layout.addWidget(self.db_view_btn)
+        
+        exp_select_layout.addLayout(db_layout)
         exp_select_group.setLayout(exp_select_layout)
         layout.addWidget(exp_select_group)
 
@@ -289,209 +263,86 @@ class DataImportTab(QWidget):
 
     # Skip rows functionality has been removed
 
-    def toggle_experiment_mode(self, checked):
-        """Toggle between new experiment and load experiment modes"""
-        if self.new_exp_radio.isChecked():
-            # New experiment mode
-            # Enable experiment creation fields
-            self.exp_name.setEnabled(True)
-            self.exp_name.clear()
-            self.exp_desc.setEnabled(True)
-            self.exp_desc.clear()
-            self.exp_date.setVisible(False)
-
-            # Update UI state
-            self.exp_combo.setEnabled(False)
-            self.refresh_btn.setEnabled(False)
-            self.delete_btn.setEnabled(False)
-            self.browse_btn.setEnabled(True)
-            # self.label_column.setEnabled(True)
-            self.import_btn.setText("Create & Import Data")
-            self.import_btn.setStyleSheet("background-color: #d4f7d4; font-weight: bold; padding: 5px;")
-
-            # Update group box titles
-            self.exp_group.setTitle("New Experiment Information")
-        else:
-            # Load experiment mode
-            # Disable experiment creation fields
-            self.exp_name.setEnabled(False)
-            self.exp_desc.setEnabled(False)
-            self.exp_date.setVisible(True)
-
-            # Update UI state
-            self.exp_combo.setEnabled(True)
-            self.refresh_btn.setEnabled(True)
-            self.delete_btn.setEnabled(True)
-            self.browse_btn.setEnabled(False)
-            # self.label_column.setEnabled(False)
-            self.import_btn.setText("Load Selected Experiment")
-            self.import_btn.setStyleSheet("background-color: #d4e6f7; font-weight: bold; padding: 5px;")
-
-            # Update group box titles
-            self.exp_group.setTitle("Experiment Details")
-
-            # Load available experiments
-            self.load_experiments()
-
-    def load_experiments(self):
-        """Load list of experiments from database"""
-        try:
-            # Check if experiment manager is initialized
-            if self.experiment_manager is None:
-                print("Experiment manager is not initialized, creating a new one")
-                self.experiment_manager = ExperimentManager(base_dir="data")
-
-            # Clear the combo box
-            self.exp_combo.clear()
-
-            # Get experiments from database
-            print("Fetching experiments from database...")
-            experiments = self.experiment_manager.list_experiments()
-            print(f"Found {len(experiments)} experiments")
-
-            # Add experiments to combo box
-            for exp in experiments:
-                print(f"Adding experiment: {exp['name']} (ID: {exp['id']})")
-                self.exp_combo.addItem(f"{exp['name']} ({exp['date']})", exp['id'])
-
-            if not experiments:
-                print("No experiments found in database")
-                self.exp_combo.addItem("No experiments found")
-                self.exp_combo.setEnabled(False)
-            else:
-                self.exp_combo.setEnabled(True)
-                self.delete_btn.setEnabled(True)
-
-        except Exception as e:
-            print(f"Error loading experiments: {str(e)}")
-            import traceback
-            traceback.print_exc()
-            QMessageBox.critical(self, "Error", f"Error loading experiments: {str(e)}")
-
-    def experiment_selected(self, index):
-        """Handle experiment selection from combo box"""
-        if index < 0 or self.exp_combo.itemText(index) == "No experiments found":
-            return
-
-        # Get experiment ID from combo box
-        experiment_id = self.exp_combo.itemData(index)
-        if experiment_id is None:
-            return
-
-        try:
-            # Get experiment details
-            experiment = self.experiment_manager.get_experiment(experiment_id)
-            print(f"Experiment data in experiment_selected: {experiment}")
-
-            if experiment:
-                # Display experiment info with safe access
-                try:
-                    # Use get() method with default values for safe access
-                    name = experiment.get('name', 'Unnamed Experiment')
-                    description = experiment.get('description', '')
-                    file_path = experiment.get('file_path', '')
-                    created_at = experiment.get('created_at', '')
-
-                    print(f"Setting UI elements - Name: {name}, Desc: {description}, Path: {file_path}")
-
-                    # Set UI elements
-                    self.exp_name.setText(name)
-                    self.exp_desc.setText(description)
-                    self.file_path.setText(file_path)
-
-                    # Format and display the creation date
-                    if created_at:
-                        self.exp_date.setText(created_at)
-                        self.exp_date.setVisible(True)
-                    else:
-                        self.exp_date.setVisible(False)
-                except Exception as ui_error:
-                    print(f"Error setting UI elements: {ui_error}")
-                    # Continue with the rest of the function even if UI update fails
-
-                # Get preprocessing steps for this experiment
-                try:
-                    preprocessing_steps = self.experiment_manager.get_preprocessing_steps(experiment_id)
-                    if preprocessing_steps:
-                        steps_text = ", ".join([step.get("name", "Unknown") for step in preprocessing_steps])
-                        self.exp_desc.append(f"\n\nPreprocessing: {steps_text}")
-                except Exception as steps_error:
-                    print(f"Error getting preprocessing steps: {steps_error}")
-                    preprocessing_steps = []
-
-                # Store experiment ID
-                self.current_experiment_id = experiment_id
-
-                # Store the current experiment ID in app_data so it's accessible to other tabs
-                self.app_data["current_experiment_id"] = self.current_experiment_id
-                self.app_data["preprocessing_steps"] = preprocessing_steps
-                print(f"Stored current experiment ID in app_data: {self.current_experiment_id}")
-
-                # Enable the delete button
-                self.delete_btn.setEnabled(True)
-            else:
-                print(f"No experiment data returned for ID: {experiment_id}")
-        except Exception as e:
-            print(f"Exception in experiment_selected: {e}")
-            import traceback
-            traceback.print_exc()
-            QMessageBox.critical(self, "Error", f"Error loading experiment details: {str(e)}")
-
     def import_data(self):
-        """Import data or load existing experiment"""
-        if self.new_exp_radio.isChecked():
-            # New experiment mode
-            self.create_new_experiment()
-        else:
-            # Load experiment mode
-            self.load_existing_experiment()
-
-    def create_new_experiment(self):
-        """Create a new experiment with imported data"""
+        """Import data for a new experiment"""
         file_path = self.file_path.text()
 
         if file_path == "No file selected":
-            QMessageBox.warning(self, "Warning", "Please select a data file first")
+            QMessageBox.warning(self, "Missing File", "Please select a data file.")
             return
 
+        # Get experiment name and description
+        exp_name = self.exp_name.text()
+        if not exp_name:
+            QMessageBox.warning(self, "Missing Information", "Please enter an experiment name.")
+            return
+
+        exp_desc = self.exp_desc.toPlainText()
+
+        # Label selection has been removed
+        # We'll automatically detect metadata columns in later steps
+        selected_label = None
+
         try:
-            # Create new experiment
-            exp_name = self.exp_name.text() or f"Experiment_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-            exp_desc = self.exp_desc.toPlainText()
-
-            # Label selection has been removed
-            # We'll automatically detect metadata columns in later steps
-            selected_label = None
-
-            # No skip rows functionality
-
-            # First, load and transform the data
-            if hasattr(self, 'temp_df') and self.is_voltammetry_format:
-                # For voltammetry format, we need to store both the original wide format and the transformed long format
-                print("Using voltammetry format data")
-
-                # Store the original wide format data for preprocessing and feature extraction
-                if "original_wide_data" not in self.app_data:
-                    self.app_data["original_wide_data"] = self.temp_df.copy()
-                    print(f"Stored original wide format data with shape: {self.app_data['original_wide_data'].shape}")
-
-                # Transform to long format for visualization
-                df = self.transform_voltammetry_data(self.temp_df)
-                print(f"Transformed to long format for visualization with shape: {df.shape}")
-            elif hasattr(self, 'temp_df'):
-                # Use the already loaded dataframe for standard format
-                df = self.temp_df.copy()
-            else:
-                # Load the data file
-                if file_path.endswith('.csv'):
-                    try:
-                        df = pd.read_csv(file_path)
-                    except:
-                        df = pd.read_csv(file_path, sep=';')
-                elif file_path.endswith(('.xlsx', '.xls')):
-                    df = pd.read_excel(file_path)
+            # Load data from file
+            if file_path.endswith('.csv'):
+                if ';' in open(file_path, 'r').read(1024):
+                    df = pd.read_csv(file_path, sep=';')
                 else:
-                    df = load_data(file_path)  # Fallback to the original loader
+                    df = pd.read_csv(file_path)
+            elif file_path.endswith(('.xlsx', '.xls')):
+                df = pd.read_excel(file_path)
+            else:
+                raise ValueError("Unsupported file format")
+
+            # Check if this is the special voltammetry format (columns are voltage values)
+            is_voltammetry_format = False
+            voltage_columns = []
+
+            # Check if column headers can be converted to float or represent voltage values
+            for col in df.columns:
+                try:
+                    # Try to convert to float directly
+                    try:
+                        float(col)
+                        voltage_columns.append(col)
+                        is_voltammetry_format = True
+                    except ValueError:
+                        # Check if it's a complex voltage format like "-0.795.1925"
+                        # This could be a voltage with additional information
+                        if isinstance(col, str) and col.replace('-', '').replace('.', '').isdigit():
+                            # It has only digits, minus signs, and dots - likely a voltage
+                            # For parsing, we'll take the first part before the second dot
+                            parts = col.split('.')
+                            if len(parts) >= 2:
+                                # Try to parse as "major.minor" format
+                                try:
+                                    voltage_value = float(f"{parts[0]}.{parts[1]}")
+                                    voltage_columns.append(col)
+                                    is_voltammetry_format = True
+                                except ValueError:
+                                    pass
+                except (TypeError):
+                    pass
+
+            # Transform data if needed
+            if is_voltammetry_format:
+                print(f"Detected voltammetry format with {len(voltage_columns)} voltage columns")
+                self.is_voltammetry_format = True
+                transformed_df = self.transform_voltammetry_data(df)
+                
+                # Store the original wide format data
+                self.app_data["original_wide_data"] = df.copy()
+                
+                # Use the transformed data for further processing
+                df = transformed_df
+            else:
+                print(f"Using standard format with columns: {df.columns.tolist()}")
+                self.is_voltammetry_format = False
+
+            # Store the dataset in app_data
+            self.app_data["dataset"] = df
+            print(f"Stored dataset in app_data with shape: {df.shape}")
 
             # Create the experiment after we have the data
             self.current_experiment_id = self.experiment_manager.create_experiment(
@@ -510,51 +361,24 @@ class DataImportTab(QWidget):
 
             # Extract labels if a label column is selected
             # if selected_label and selected_label in df.columns:
-            #     # Create a labels dataframe
-            #     labels_df = pd.DataFrame({
-            #         'sample_id': range(len(df)),
-            #         'label_value': df[selected_label]
-            #     })
-
-            #     # Store labels in app_data
-            #     self.app_data["labels"] = labels_df
-
-            #     # Add labels to experiment
-            #     self.experiment_manager.add_labels(self.current_experiment_id, labels_df)
-
-            #     QMessageBox.information(self, "Success", f"Extracted {len(labels_df)} labels from column '{selected_label}'")
-
-            #     # Remove label column from the dataset to avoid confusion
-            #     df = df.drop(columns=[selected_label])
-
-            # Store the dataset
-            self.app_data["dataset"] = df
+            #     labels = df[selected_label].unique()
+            #     print(f"Extracted labels: {labels}")
+            #     self.app_data["labels"] = labels
 
             # Store the current experiment ID in app_data so it's accessible to other tabs
             self.app_data["current_experiment_id"] = self.current_experiment_id
             print(f"Stored current experiment ID in app_data: {self.current_experiment_id}")
 
-            # If this is voltammetry format data, populate the scan combo box
-            if self.is_voltammetry_format and "voltammetry_row_indices" in self.app_data:
-                self.scan_combo.clear()
-                # Only add individual scans, no "All Scans" option to prevent lag
-                for idx in self.app_data["voltammetry_row_indices"]:
-                    self.scan_combo.addItem(f"Scan {idx}")
-                self.scan_combo.setEnabled(True)
-                # Default to the first scan if available
-                if self.scan_combo.count() > 0:
-                    self.scan_combo.setCurrentIndex(0)
-
-            # Plot raw data by default
-            # self.plot_data("raw")
-
             # Signal that data is loaded and ready for preprocessing
             self.data_loaded.emit(True)
 
-            QMessageBox.information(self, "Success", f"Created new experiment: {exp_name} (ID: {self.current_experiment_id})")
+            QMessageBox.information(self, "Success", "Data imported successfully. Proceed to the Preprocessing tab.")
 
         except Exception as e:
-            QMessageBox.critical(self, "Error", f"Error creating experiment: {str(e)}")
+            print(f"Error importing data: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            QMessageBox.critical(self, "Error", f"Error importing data: {str(e)}")
 
     def transform_voltammetry_data(self, df):
         """Transform voltammetry data from wide format (voltages as columns) to long format (Potential and Current columns)"""

@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 
-from app.core.regression_models import RegressionModels
+from app.core.regression_models import RegressionModels, SYMBOLIC_AVAILABLE
 
 
 class RegressionModelTab(QWidget):
@@ -32,33 +32,30 @@ class RegressionModelTab(QWidget):
         # Model type selection
         self.model_group = QButtonGroup(self)
 
-        # First row of radio buttons
-        self.linear_radio = QRadioButton("Linear Regression")
-        self.linear_radio.setChecked(True)
-        self.model_group.addButton(self.linear_radio, 1)
-        model_layout.addWidget(self.linear_radio, 0, 0)
-
+        # Polynomial (Degree 2)
         self.poly2_radio = QRadioButton("Polynomial (Degree 2)")
+        self.poly2_radio.setChecked(True)
         self.model_group.addButton(self.poly2_radio, 2)
-        model_layout.addWidget(self.poly2_radio, 0, 1)
+        model_layout.addWidget(self.poly2_radio, 0, 0)
 
+        # Polynomial (Degree 3)
         self.poly3_radio = QRadioButton("Polynomial (Degree 3)")
         self.model_group.addButton(self.poly3_radio, 3)
-        model_layout.addWidget(self.poly3_radio, 0, 2)
+        model_layout.addWidget(self.poly3_radio, 0, 1)
 
-        # Second row of radio buttons
+        # Gaussian Regression
         self.gaussian_radio = QRadioButton("Gaussian Regression")
         self.model_group.addButton(self.gaussian_radio, 4)
         model_layout.addWidget(self.gaussian_radio, 1, 0)
 
+        # Sigmoid Regression
         self.sigmoid_radio = QRadioButton("Sigmoid Regression")
         self.model_group.addButton(self.sigmoid_radio, 5)
         model_layout.addWidget(self.sigmoid_radio, 1, 1)
 
-        # Symbolic Regression is temporarily disabled
-        self.symbolic_radio = QRadioButton("Symbolic Regression (Disabled)")
-        self.symbolic_radio.setEnabled(False)
-        self.symbolic_radio.setToolTip("Symbolic Regression is temporarily disabled.")
+        # Symbolic Regression
+        self.symbolic_radio = QRadioButton("Symbolic Regression")
+        self.symbolic_radio.setEnabled(True)
         self.model_group.addButton(self.symbolic_radio, 6)
         model_layout.addWidget(self.symbolic_radio, 1, 2)
 
@@ -116,6 +113,65 @@ class RegressionModelTab(QWidget):
 
         self.setLayout(layout)
 
+    def update_plot(self, x, y, model_result):
+        """Update the plot with the fitted model"""
+        self.figure.clear()
+        ax = self.figure.add_subplot(111)
+
+        # Plot the original data
+        ax.scatter(x, y, color='blue', label='Data Points')
+
+        # Sort x for smooth curve plotting
+        x_sorted = np.sort(x)
+
+        # Generate predictions for the sorted x values
+        if model_result["type"] in ["polynomial2", "polynomial3", "symbolic"]:
+            model = model_result["model"]
+            y_pred = model.predict(x_sorted.reshape(-1, 1))
+        elif model_result["type"] in ["gaussian", "sigmoid"]:
+            model_func = model_result["model"]
+            if "model_params" in model_result:
+                y_pred = model_func(x_sorted, *model_result["model_params"])
+            else:
+                # Fallback to params if model_params doesn't exist
+                y_pred = model_func(x_sorted, *[model_result["params"][p] for p in model_result["params"]])
+        else:
+            y_pred = None
+
+        # Plot the model curve
+        if y_pred is not None:
+            ax.plot(x_sorted, y_pred, 'r-', label=f'{model_result["type"].capitalize()} Model')
+
+        # Mark the optimal parameter value
+        optimal_x = model_result["optimal_x"]
+        if model_result["type"] in ["polynomial2", "polynomial3", "symbolic"]:
+            optimal_y = model_result["model"].predict(np.array([[optimal_x]]))[0]
+        elif model_result["type"] in ["gaussian", "sigmoid"]:
+            if "model_params" in model_result:
+                optimal_y = model_result["model"](optimal_x, *model_result["model_params"])
+            else:
+                # Fallback to params if model_params doesn't exist
+                optimal_y = model_result["model"](optimal_x, *[model_result["params"][p] for p in model_result["params"]])
+        else:
+            optimal_y = None
+
+        if optimal_y is not None:
+            ax.plot(optimal_x, optimal_y, 'go', markersize=10, label='Optimal Value')
+
+        # Set labels and title
+        param_col = self.app_data["parameter_data"]["param_col"]
+        response_col = self.app_data["parameter_data"]["response_col"]
+        ax.set_xlabel(param_col)
+        ax.set_ylabel(response_col)
+        ax.set_title(f"{model_result['type'].capitalize()} Model: {response_col} vs {param_col}")
+
+        # Add grid and legend
+        ax.grid(True, linestyle='--', alpha=0.7)
+        ax.legend()
+
+        # Update the canvas
+        self.canvas.draw()
+
     def fit_model(self):
         """Fit the selected regression model to the data"""
         # Check if data is available
@@ -132,10 +188,7 @@ class RegressionModelTab(QWidget):
             # Determine which model to fit
             model_id = self.model_group.checkedId()
 
-            if model_id == 1:  # Linear
-                model_result = RegressionModels.linear_regression(x, y)
-                model_type = "linear"
-            elif model_id == 2:  # Polynomial (Degree 2)
+            if model_id == 2:  # Polynomial (Degree 2)
                 model_result = RegressionModels.polynomial_regression_2(x, y)
                 model_type = "polynomial2"
             elif model_id == 3:  # Polynomial (Degree 3)
@@ -148,9 +201,8 @@ class RegressionModelTab(QWidget):
                 model_result = RegressionModels.sigmoid_regression(x, y)
                 model_type = "sigmoid"
             elif model_id == 6:  # Symbolic
-                # Symbolic Regression is temporarily disabled
-                QMessageBox.warning(self, "Warning", "Symbolic Regression is temporarily disabled.\n\nPlease use other regression models instead.")
-                return
+                model_result = RegressionModels.symbolic_regression(x, y)
+                model_type = "symbolic"
             elif model_id == 7:  # Auto
                 model_result = RegressionModels.find_best_model(x, y)
                 model_type = model_result["type"] if model_result else None
@@ -174,65 +226,31 @@ class RegressionModelTab(QWidget):
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Error fitting model: {str(e)}")
 
-    def update_plot(self, x, y, model_result):
-        """Update the plot with the fitted model"""
-        self.figure.clear()
-        ax = self.figure.add_subplot(111)
-
-        # Plot the original data
-        ax.scatter(x, y, color='blue', label='Data Points')
-
-        # Sort x for smooth curve plotting
-        x_sorted = np.sort(x)
-
-        # Generate predictions for the sorted x values
-        if model_result["type"] == "linear":
-            model = model_result["model"]
-            y_pred = model.predict(x_sorted.reshape(-1, 1))
-        else:
-            model_func = model_result["model"]
-            y_pred = model_func(x_sorted, *model_result["model_params"])
-
-        # Plot the model curve
-        ax.plot(x_sorted, y_pred, 'r-', label=f'{model_result["type"].capitalize()} Model')
-
-        # Mark the optimal parameter value
-        optimal_x = model_result["optimal_x"]
-        if model_result["type"] == "linear":
-            optimal_y = model_result["model"].predict(np.array([[optimal_x]]))[0]
-        else:
-            optimal_y = model_result["model"](optimal_x, *model_result["model_params"])
-
-        ax.plot(optimal_x, optimal_y, 'go', markersize=10, label='Optimal Value')
-
-        # Set labels and title
-        param_col = self.app_data["parameter_data"]["param_col"]
-        response_col = self.app_data["parameter_data"]["response_col"]
-        ax.set_xlabel(param_col)
-        ax.set_ylabel(response_col)
-        ax.set_title(f"{model_result['type'].capitalize()} Model: {response_col} vs {param_col}")
-
-        # Add grid and legend
-        ax.grid(True, linestyle='--', alpha=0.7)
-        ax.legend()
-
-        # Update the canvas
-        self.canvas.draw()
-
     def update_metrics(self, model_result):
-        """Update the metrics display"""
-        # Update equation
-        self.equation_label.setText(model_result["equation"])
-
-        # Update R²
-        r2 = model_result["metrics"]["r2"]
+        """Update the metrics display with model statistics"""
+        if not model_result:
+            return
+            
+        metrics = model_result.get("metrics", {})
+        if not metrics and model_result["type"] == "symbolic":
+            # Handle symbolic model format
+            metrics = {
+                "r2": model_result.get("r2", 0),
+                "mse": model_result.get("mse", 0)
+            }
+            
+        r2 = metrics.get("r2", 0)
+        mse = metrics.get("mse", 0)
+        rmse = np.sqrt(mse) if mse is not None else 0
+        
+        # Display metrics
         self.r2_label.setText(f"{r2:.4f}")
-
-        # Update MSE
-        mse = model_result["metrics"]["mse"]
         self.mse_label.setText(f"{mse:.4f}")
-
-        # Update optimal value
-        optimal_x = model_result["optimal_x"]
-        param_col = self.app_data["parameter_data"]["param_col"]
-        self.optimal_label.setText(f"{optimal_x:.4f} ({param_col})")
+        self.optimal_label.setText(f"{rmse:.4f}")
+        
+        # Display equation if available
+        equation = model_result.get("equation", "")
+        if equation:
+            self.equation_label.setText(equation)
+        else:
+            self.equation_label.setText("Not available for this model type")

@@ -10,8 +10,76 @@ import matplotlib.pyplot as plt
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 from sklearn.model_selection import train_test_split
+from sklearn.pipeline import Pipeline
+from sklearn.base import BaseEstimator, TransformerMixin
+from sklearn.preprocessing import StandardScaler, FunctionTransformer
+from sklearn.impute import SimpleImputer
 
 from app.core.models import AntibioticClassifier, RegressionClassifier
+from app.core.feature_eng import apply_pca_to_wide_data, apply_fft_to_wide_data, apply_windowed_integral_to_wide_data
+from app.core.preprocessing import apply_transformers
+
+
+class PCATransformer(BaseEstimator, TransformerMixin):
+    """Transform data using PCA feature extraction"""
+    def __init__(self, n_components=3):
+        self.n_components = n_components
+        
+    def fit(self, X, y=None):
+        # No fitting required for this method
+        return self
+        
+    def transform(self, X):
+        # Apply PCA to the data
+        # Note: This expects X to be in the appropriate format
+        feature_matrix, _ = apply_pca_to_wide_data(X, n_components=self.n_components)
+        return feature_matrix
+
+
+class FFTTransformer(BaseEstimator, TransformerMixin):
+    """Transform data using FFT feature extraction"""
+    def __init__(self):
+        pass
+        
+    def fit(self, X, y=None):
+        # No fitting required for this method
+        return self
+        
+    def transform(self, X):
+        # Apply FFT to the data
+        # Note: This expects X to be in the appropriate format
+        feature_matrix = apply_fft_to_wide_data(X)
+        return feature_matrix
+
+
+class WindowedIntegralTransformer(BaseEstimator, TransformerMixin):
+    """Transform data using Windowed Slicing Integral feature extraction"""
+    def __init__(self, num_windows=10):
+        self.num_windows = num_windows
+        
+    def fit(self, X, y=None):
+        # No fitting required for this method
+        return self
+        
+    def transform(self, X):
+        # Apply Windowed Integral to the data
+        # Note: This expects X to be in the appropriate format
+        feature_matrix = apply_windowed_integral_to_wide_data(X, num_windows=self.num_windows)
+        return feature_matrix
+
+
+class PreprocessingTransformer(BaseEstimator, TransformerMixin):
+    """Apply preprocessing transformers to data"""
+    def __init__(self, transformers=None):
+        self.transformers = transformers
+        
+    def fit(self, X, y=None):
+        return self
+        
+    def transform(self, X):
+        if self.transformers:
+            return apply_transformers(X, self.transformers)
+        return X
 
 
 class TrainingThread(QThread):
@@ -454,6 +522,19 @@ class ModelTrainingTab(QWidget):
             print(f"Using {len(feature_cols)} features for training")
             print(f"First few feature names: {feature_cols[:5]}")
 
+            # Determine which feature extraction method was used
+            feature_method = None
+            if any(col.startswith('PC') for col in feature_cols):
+                feature_method = "pca"
+            elif any(col.startswith('FFT') for col in feature_cols):
+                feature_method = "fft"
+            elif any(col.startswith('Window') for col in feature_cols):
+                feature_method = "windowed_integral"
+            
+            # Store feature method for pipeline creation
+            self.app_data["feature_extraction_method"] = feature_method
+            print(f"Detected feature extraction method: {feature_method}")
+
             # Get feature matrix and target vector
             X = feature_matrix[feature_cols].values
 
@@ -492,14 +573,21 @@ class ModelTrainingTab(QWidget):
                 # For classification, keep as is (could be string or numeric)
                 y = feature_matrix[target_col].values
                 print(f"Using classification target: {y[:5]}")
-                print(f"Unique classes: {np.unique(y)}")
-
-                # Check if we have enough samples for each class
-                unique_classes, class_counts = np.unique(y, return_counts=True)
-                min_samples = np.min(class_counts)
-                if min_samples < 3:
-                    QMessageBox.warning(self, "Warning",
-                                     f"Some classes have very few samples (minimum: {min_samples}). This may affect model performance.")
+                
+                # Convert all elements to string to avoid mixed type comparison
+                try:
+                    y_str = np.array([str(val) for val in y])
+                    print(f"Unique classes: {np.unique(y_str)}")
+                    
+                    # Check if we have enough samples for each class
+                    unique_classes, class_counts = np.unique(y_str, return_counts=True)
+                    min_samples = np.min(class_counts)
+                    if min_samples < 3:
+                        QMessageBox.warning(self, "Warning",
+                                         f"Some classes have very few samples (minimum: {min_samples}). This may affect model performance.")
+                except Exception as e:
+                    print(f"Error when processing unique classes: {e}")
+                    # Continue without showing the warning
 
             # Store selected features for later use
             self.app_data["selected_features"] = feature_cols
@@ -736,14 +824,27 @@ class ModelTrainingTab(QWidget):
 
             # Only show ROC curve for binary classification
             y_test = results.get("y_test", [])
-            if len(y_test) > 0 and len(np.unique(y_test)) == 2:
-                # Binary classification - can show ROC curve
-                self.update_roc_curve(results)
-                # Show classification-specific tabs
-                self.result_tabs.setTabVisible(1, True)  # Show Evaluation Plots tab
-            else:
-                # Multiclass classification - hide ROC curve tab
-                self.result_tabs.setTabVisible(1, False)  # Hide Evaluation Plots tab
+            try:
+                # Safely determine if binary classification by converting all to string first
+                if len(y_test) > 0:
+                    y_test_str = np.array([str(val) for val in y_test])
+                    num_classes = len(np.unique(y_test_str))
+                    
+                    if num_classes == 2:
+                        # Binary classification - can show ROC curve
+                        self.update_roc_curve(results)
+                        # Show classification-specific tabs
+                        self.result_tabs.setTabVisible(1, True)  # Show Evaluation Plots tab
+                    else:
+                        # Multiclass classification - hide ROC curve tab
+                        self.result_tabs.setTabVisible(1, False)  # Hide Evaluation Plots tab
+                else:
+                    # No test data - hide ROC curve tab
+                    self.result_tabs.setTabVisible(1, False)
+            except Exception as e:
+                print(f"Error checking binary classification: {e}")
+                # Default behavior - hide ROC curve tab
+                self.result_tabs.setTabVisible(1, False)
 
         # Update feature importance plot (works for both regression and classification)
         self.update_feature_importance(results)
@@ -756,8 +857,31 @@ class ModelTrainingTab(QWidget):
                 self.hyperparam_table.setItem(i, 0, QTableWidgetItem(param))
                 self.hyperparam_table.setItem(i, 1, QTableWidgetItem(str(value)))
 
-        # Enable save and continue buttons
-        self.save_btn.setEnabled(True)
+        # Store the trained model and results
+        self.trained_model = results.get('model')
+        self.training_results = results
+        
+        # Store feature columns used for training
+        if 'feature_cols' in results:
+            self.feature_columns = results['feature_cols']
+        elif 'selected_features' in results:
+            self.feature_columns = results['selected_features']
+        elif 'selected_features' in self.app_data:
+            self.feature_columns = self.app_data['selected_features']
+        else:
+            # Fallback to feature columns from app_data
+            feature_matrix = self.app_data.get('feature_matrix')
+            if feature_matrix is not None:
+                self.feature_columns = [col for col in feature_matrix.columns 
+                                      if col.startswith(('FFT', 'PC', 'Window'))]
+            else:
+                self.feature_columns = []
+                print("Warning: Could not determine feature columns used for training")
+        
+        # Automatically save the model
+        self.save_model()
+
+        # Enable the continue button
         self.continue_btn.setEnabled(True)
 
         # Signal that model is ready
@@ -817,34 +941,47 @@ class ModelTrainingTab(QWidget):
         y_pred_proba = results.get("y_pred_proba", [])
 
         # Check if we have binary classification data
-        if len(y_test) > 0 and len(y_pred_proba) > 0 and len(np.unique(y_test)) == 2:
-            try:
-                # For binary classification, we need the probability of the positive class
-                # If y_pred_proba is 2D (one column per class), take the second column
-                if isinstance(y_pred_proba, np.ndarray) and y_pred_proba.ndim == 2 and y_pred_proba.shape[1] >= 2:
-                    y_pred_proba_binary = y_pred_proba[:, 1]
+        # Safely determine if this is binary classification
+        try:
+            if len(y_test) > 0 and len(y_pred_proba) > 0:
+                # Convert all values to string to safely count unique values
+                y_test_str = np.array([str(val) for val in y_test])
+                num_classes = len(np.unique(y_test_str))
+                
+                if num_classes == 2:
+                    try:
+                        # For binary classification, we need the probability of the positive class
+                        # If y_pred_proba is 2D (one column per class), take the second column
+                        if isinstance(y_pred_proba, np.ndarray) and y_pred_proba.ndim == 2 and y_pred_proba.shape[1] >= 2:
+                            y_pred_proba_binary = y_pred_proba[:, 1]
+                        else:
+                            # Otherwise use as is (assuming it's already the probability of the positive class)
+                            y_pred_proba_binary = y_pred_proba
+
+                        # Plot ROC curve
+                        from sklearn.metrics import roc_curve, auc
+                        fpr, tpr, _ = roc_curve(y_test, y_pred_proba_binary)
+                        roc_auc = auc(fpr, tpr)
+
+                        ax.plot(fpr, tpr, lw=2, label=f'ROC curve (area = {roc_auc:.2f})')
+                        ax.plot([0, 1], [0, 1], 'k--', lw=2)
+                        ax.set_xlim([0.0, 1.0])
+                        ax.set_ylim([0.0, 1.05])
+                        ax.set_xlabel('False Positive Rate')
+                        ax.set_ylabel('True Positive Rate')
+                        ax.set_title('Receiver Operating Characteristic')
+                        ax.legend(loc="lower right")
+                    except Exception as e:
+                        print(f"Error plotting ROC curve: {e}")
+                        ax.text(0.5, 0.5, f"Error plotting ROC curve: {e}", ha="center", va="center", wrap=True)
                 else:
-                    # Otherwise use as is (assuming it's already the probability of the positive class)
-                    y_pred_proba_binary = y_pred_proba
-
-                # Plot ROC curve
-                from sklearn.metrics import roc_curve, auc
-                fpr, tpr, _ = roc_curve(y_test, y_pred_proba_binary)
-                roc_auc = auc(fpr, tpr)
-
-                ax.plot(fpr, tpr, lw=2, label=f'ROC curve (area = {roc_auc:.2f})')
-                ax.plot([0, 1], [0, 1], 'k--', lw=2)
-                ax.set_xlim([0.0, 1.0])
-                ax.set_ylim([0.0, 1.05])
-                ax.set_xlabel('False Positive Rate')
-                ax.set_ylabel('True Positive Rate')
-                ax.set_title('Receiver Operating Characteristic')
-                ax.legend(loc="lower right")
-            except Exception as e:
-                print(f"Error plotting ROC curve: {e}")
-                ax.text(0.5, 0.5, f"Error plotting ROC curve: {e}", ha="center", va="center", wrap=True)
-        else:
-            ax.text(0.5, 0.5, "ROC curve only available for binary classification", ha="center", va="center")
+                    ax.text(0.5, 0.5, f"ROC curve only available for binary classification (found {num_classes} classes)", 
+                            ha="center", va="center")
+            else:
+                ax.text(0.5, 0.5, "No test data available for ROC curve", ha="center", va="center")
+        except Exception as e:
+            print(f"Error determining class count for ROC curve: {e}")
+            ax.text(0.5, 0.5, f"Error determining class count: {e}", ha="center", va="center", wrap=True)
 
         self.roc_canvas.draw()
 
@@ -939,10 +1076,137 @@ class ModelTrainingTab(QWidget):
         self.feature_canvas.draw()
 
     def save_model(self):
-        """Save the trained model"""
-        # This would open a dialog to save the model to a file
-        # In this example, we'll just print a message
-        print("Model saving functionality would be implemented here")
+        """Save the trained model and create a pipeline that includes preprocessing and feature extraction"""
+        try:
+            # Check if we have a trained model
+            if not hasattr(self, 'trained_model') or self.trained_model is None:
+                QMessageBox.warning(self, "Warning", "No trained model to save. Please train a model first.")
+                return
+
+            # Check if we have an experiment ID
+            if "current_experiment_id" not in self.app_data or self.app_data["current_experiment_id"] is None:
+                QMessageBox.warning(self, "Warning", "No active experiment. Please create or load an experiment first.")
+                return
+
+            experiment_id = self.app_data["current_experiment_id"]
+            
+            # Get model type and metrics
+            model_type = self.model_combo.currentText()
+            
+            # Collect metrics if available
+            metrics = {}
+            if hasattr(self, 'training_results') and self.training_results:
+                # Add metrics directly from training_results
+                if 'metrics' in self.training_results:
+                    for key, value in self.training_results['metrics'].items():
+                        # Ensure all metric values are float
+                        try:
+                            if isinstance(value, (int, float)):
+                                metrics[key] = float(value)
+                            else:
+                                print(f"Warning: Non-numeric metric {key}: {value}")
+                                # If it's not numeric, just include it as is
+                                metrics[key] = value
+                        except (ValueError, TypeError) as e:
+                            print(f"Error converting metric {key} to float: {e}")
+                            metrics[key] = 0.0
+                
+                # Add feature importance if available
+                if 'feature_importance' in self.training_results:
+                    metrics['feature_importance'] = self.training_results['feature_importance']
+                
+                # Add target column information
+                metrics['target_column'] = self.target_combo.currentText()
+                
+                # Determine if this is a regression task based on target column name
+                target_col = self.target_combo.currentText()
+                metrics['is_regression'] = (target_col == 'concentration')
+                
+                # Add feature columns used for training
+                if hasattr(self, 'feature_columns') and self.feature_columns:
+                    metrics['feature_columns'] = self.feature_columns
+            
+            # Print metrics for debugging
+            print("Saving model with metrics:", metrics)
+            
+            # Create an experiment manager
+            from app.core.experiment_manager import ExperimentManager
+            experiment_manager = ExperimentManager(base_dir="data")
+            
+            # Save the model
+            model_path = experiment_manager.save_model(
+                experiment_id=experiment_id,
+                model=self.trained_model,
+                model_type=model_type,
+                metrics=metrics
+            )
+            
+            # Create and save a pipeline that includes preprocessing and feature extraction
+            feature_method = self.app_data.get("feature_extraction_method")
+            
+            if feature_method:
+                # Get preprocessing transformers
+                transformers = experiment_manager.get_preprocessing_transformers(experiment_id)
+                
+                # Create a pipeline with the appropriate feature extraction transformer
+                pipeline_steps = []
+                
+                # Add preprocessing if there are transformers
+                if transformers:
+                    # Use the PreprocessingTransformer class instead of a local function
+                    preprocessing_transformer = PreprocessingTransformer(transformers=transformers)
+                    pipeline_steps.append(('preprocessing', preprocessing_transformer))
+                
+                # Add feature extraction based on the method used
+                if feature_method == "pca":
+                    pipeline_steps.append(('feature_extraction', PCATransformer(n_components=3)))
+                elif feature_method == "fft":
+                    pipeline_steps.append(('feature_extraction', FFTTransformer()))
+                elif feature_method == "windowed_integral":
+                    pipeline_steps.append(('feature_extraction', WindowedIntegralTransformer()))
+                
+                # Add the trained model as the final step
+                pipeline_steps.append(('model', self.trained_model))
+                
+                # Create the pipeline
+                pipeline = Pipeline(pipeline_steps)
+                
+                # Save the pipeline
+                pipeline_path = experiment_manager.save_pipeline(
+                    experiment_id=experiment_id,
+                    pipeline=pipeline,
+                    feature_method=feature_method
+                )
+                
+                print(f"Pipeline saved to {pipeline_path}")
+            
+            # Close the experiment manager
+            experiment_manager.close()
+            
+            if model_path:
+                QMessageBox.information(
+                    self, 
+                    "Success", 
+                    f"Model saved successfully to {model_path}\n\n"
+                    f"You can now load this experiment to use the model for predictions on new data."
+                )
+                
+                # Store model information in app_data
+                self.app_data["trained_model"] = self.trained_model
+                self.app_data["model_metrics"] = metrics
+                self.app_data["model_type"] = model_type
+                self.app_data["model_path"] = model_path
+                
+                print(f"Model saved to {model_path}")
+                return True
+            else:
+                QMessageBox.warning(self, "Warning", "Failed to save model.")
+                return False
+                
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Error saving model: {str(e)}")
+            print(f"Error saving model: {str(e)}")
+            return False
 
     def continue_to_analysis(self):
         """Continue to the results analysis tab"""

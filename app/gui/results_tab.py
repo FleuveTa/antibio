@@ -17,6 +17,7 @@ from collections import Counter
 
 class ResultsVisualizationTab(QWidget):
     report_ready = pyqtSignal(bool)
+    analysis_done = pyqtSignal(bool)  # New signal for enabling prediction tab
 
     def __init__(self, app_data):
         super().__init__()
@@ -173,6 +174,12 @@ class ResultsVisualizationTab(QWidget):
         self.export_btn.clicked.connect(self.export_report)
         buttons_layout.addWidget(self.export_btn)
 
+        # Add a button to continue to prediction
+        self.continue_btn = QPushButton("Continue to Prediction")
+        self.continue_btn.setStyleSheet("background-color: #e6f2ff; font-weight: bold;")
+        self.continue_btn.clicked.connect(self.continue_to_prediction)
+        buttons_layout.addWidget(self.continue_btn)
+
         report_layout.addLayout(buttons_layout)
 
         report_group.setLayout(report_layout)
@@ -180,6 +187,9 @@ class ResultsVisualizationTab(QWidget):
 
         layout.addWidget(splitter)
         self.setLayout(layout)
+
+        # Connect signals
+        self.report_ready.connect(lambda ready: self.export_btn.setEnabled(ready))
 
     def showEvent(self, event):
         """Handle when tab is shown"""
@@ -231,6 +241,9 @@ class ResultsVisualizationTab(QWidget):
                     self.metrics_table.setItem(i, 1, QTableWidgetItem(str(value)))
             else:
                 self.metrics_table.setItem(i, 1, QTableWidgetItem(str(value)))
+
+        # Do not emit signal that analysis is done here
+        # This will be done when the user clicks the "Continue to Prediction" button
 
     def update_prediction_plot(self):
         """Update the prediction results plot"""
@@ -529,3 +542,8 @@ class ResultsVisualizationTab(QWidget):
             QMessageBox.information(self, "Success", f"Report saved to {file_path}")
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to save report: {str(e)}")
+
+    def continue_to_prediction(self):
+        """Emit signal to continue to prediction tab"""
+        # Emit the signal to enable prediction tab
+        self.analysis_done.emit(True)

@@ -10,6 +10,7 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.impute import SimpleImputer
 from scipy.signal import savgol_filter
 from scipy.stats import zscore
+from sklearn.pipeline import Pipeline
 
 class ExperimentManager:
     def __init__(self, base_dir="data"):
@@ -89,6 +90,19 @@ class ExperimentManager:
             label_value REAL,
             label_type TEXT,
             created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (experiment_id) REFERENCES experiments (id)
+        )
+        ''')
+
+        # Create models table
+        self.cursor.execute('''
+        CREATE TABLE IF NOT EXISTS models (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            experiment_id INTEGER,
+            model_type TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            metrics TEXT,
+            model_path TEXT NOT NULL,
             FOREIGN KEY (experiment_id) REFERENCES experiments (id)
         )
         ''')
@@ -418,48 +432,216 @@ class ExperimentManager:
 
     def save_model(self, experiment_id, model, model_type, metrics=None):
         """Save a trained model"""
-        # Create models directory if it doesn't exist
+        if not model:
+            print("No model to save")
+            return None
+        
+        print(f"Saving model for experiment {experiment_id}, model_type: {model_type}")
+        print(f"Metrics before saving: {metrics}")
+        
+        # Create directory for models if it doesn't exist
         models_dir = self.base_dir / "models" / f"experiment_{experiment_id}"
         models_dir.mkdir(parents=True, exist_ok=True)
-
-        # Save model
-        model_path = models_dir / f"{model_type}_model.pkl"
-        with open(model_path, 'wb') as f:
+        
+        # Save model with pickle
+        model_file = models_dir / f"{model_type}_model.pkl"
+        with open(model_file, 'wb') as f:
             pickle.dump(model, f)
-
-        # Save metrics if provided
+        
+        # Update models table
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        
+        # Convert numeric metrics to float before serializing to JSON
         if metrics:
-            metrics_path = models_dir / f"{model_type}_metrics.json"
-            with open(metrics_path, 'w') as f:
-                json.dump(metrics, f)
-
-        # Update experiment status
-        self.cursor.execute('''
-        UPDATE experiments SET status = 'completed' WHERE id = ?
-        ''', (experiment_id,))
+            numeric_metrics = ['accuracy', 'f1', 'precision', 'recall', 'roc_auc', 'r2', 'mse', 'rmse', 'explained_variance', 'mean_absolute_error']
+            for metric in numeric_metrics:
+                if metric in metrics:
+                    try:
+                        if not isinstance(metrics[metric], float):
+                            original_value = metrics[metric]
+                            metrics[metric] = float(metrics[metric])
+                            print(f"Converting metric {metric} from {original_value} ({type(original_value)}) to {metrics[metric]} ({type(metrics[metric])})")
+                    except (ValueError, TypeError) as e:
+                        print(f"Warning: Could not convert {metric} to float: {metrics[metric]}, error: {e}")
+                        metrics[metric] = 0.0
+        
+        metrics_json = json.dumps(metrics) if metrics else None
+        print(f"Metrics JSON: {metrics_json}")
+        
+        # Check if model exists in database
+        self.cursor.execute(
+            "SELECT id FROM models WHERE experiment_id = ? AND model_type = ?",
+            (experiment_id, model_type)
+        )
+        existing_model = self.cursor.fetchone()
+        
+        if existing_model:
+            # Update existing model
+            self.cursor.execute(
+                """
+                UPDATE models
+                SET created_at = ?, metrics = ?, model_path = ?
+                WHERE experiment_id = ? AND model_type = ?
+                """,
+                (now, metrics_json, str(model_file), experiment_id, model_type)
+            )
+        else:
+            # Insert new model
+            self.cursor.execute(
+                """
+                INSERT INTO models
+                (experiment_id, model_type, created_at, metrics, model_path)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (experiment_id, model_type, now, metrics_json, str(model_file))
+            )
+        
         self.conn.commit()
+        return str(model_file)
 
-        return str(model_path)
-
+    def save_pipeline(self, experiment_id, pipeline, feature_method=None):
+        """Save a pipeline that includes preprocessing steps and feature extraction
+        
+        Args:
+            experiment_id: ID of the experiment
+            pipeline: sklearn Pipeline object containing preprocessing and feature extraction steps
+            feature_method: The feature extraction method used (e.g., 'pca', 'fft', 'windowed_integral')
+            
+        Returns:
+            Path to the saved pipeline file
+        """
+        if not pipeline:
+            print("No pipeline to save")
+            return None
+        
+        # Create directory for pipelines if it doesn't exist
+        pipelines_dir = self.base_dir / "models" / f"experiment_{experiment_id}"
+        pipelines_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Save pipeline with pickle
+        pipeline_file = pipelines_dir / "pipeline.pkl"
+        with open(pipeline_file, 'wb') as f:
+            pickle.dump(pipeline, f)
+        
+        # Save feature method info if provided
+        if feature_method:
+            metadata = {"feature_method": feature_method}
+            metadata_file = pipelines_dir / "pipeline_metadata.json"
+            with open(metadata_file, 'w') as f:
+                json.dump(metadata, f)
+        
+        return str(pipeline_file)
+    
+    def load_pipeline(self, experiment_id):
+        """Load a pipeline for an experiment
+        
+        Args:
+            experiment_id: ID of the experiment
+            
+        Returns:
+            The loaded pipeline object or None if not found
+        """
+        pipeline_file = self.base_dir / "models" / f"experiment_{experiment_id}" / "pipeline.pkl"
+        
+        if pipeline_file.exists():
+            try:
+                with open(pipeline_file, 'rb') as f:
+                    return pickle.load(f)
+            except Exception as e:
+                print(f"Error loading pipeline: {e}")
+                return None
+        else:
+            print(f"No pipeline found for experiment {experiment_id}")
+            return None
+    
+    def get_pipeline_metadata(self, experiment_id):
+        """Get metadata about the pipeline for an experiment
+        
+        Args:
+            experiment_id: ID of the experiment
+            
+        Returns:
+            Dictionary of metadata or empty dict if not found
+        """
+        metadata_file = self.base_dir / "models" / f"experiment_{experiment_id}" / "pipeline_metadata.json"
+        
+        if metadata_file.exists():
+            try:
+                with open(metadata_file, 'r') as f:
+                    return json.load(f)
+            except Exception as e:
+                print(f"Error loading pipeline metadata: {e}")
+                return {}
+        else:
+            return {}
+    
+    def _convert_metrics_to_float(self, metrics):
+        """Convert numeric metrics to float values"""
+        if not metrics:
+            print("No metrics to convert to float")
+            return
+        
+        print(f"Converting metrics to float: {metrics}")    
+        # List of metrics that should be numeric
+        numeric_metrics = ['accuracy', 'f1', 'precision', 'recall', 'roc_auc', 'r2', 'mse', 'rmse', 'explained_variance', 'mean_absolute_error']
+        
+        for metric in numeric_metrics:
+            if metric in metrics:
+                try:
+                    original_value = metrics[metric]
+                    metrics[metric] = float(metrics[metric])
+                    print(f"Converted {metric} from {original_value} ({type(original_value)}) to {metrics[metric]} ({type(metrics[metric])})")
+                except (ValueError, TypeError) as e:
+                    print(f"Warning: Could not convert {metric} to float: {metrics[metric]} (type: {type(metrics[metric])}), error: {e}")
+                    metrics[metric] = 0.0
+    
     def load_model(self, experiment_id, model_type):
         """Load a trained model"""
         model_path = self.base_dir / "models" / f"experiment_{experiment_id}" / f"{model_type}_model.pkl"
-        metrics_path = self.base_dir / "models" / f"experiment_{experiment_id}" / f"{model_type}_metrics.json"
-
-        if not model_path.exists():
-            return None, None
-
-        # Load model
-        with open(model_path, 'rb') as f:
-            model = pickle.load(f)
-
-        # Load metrics if available
+        
+        # Check for model metrics
         metrics = None
-        if metrics_path.exists():
-            with open(metrics_path, 'r') as f:
-                metrics = json.load(f)
-
-        return model, metrics
+        
+        # Get model metrics from database
+        self.cursor.execute(
+            "SELECT metrics FROM models WHERE experiment_id = ? AND model_type = ?",
+            (experiment_id, model_type)
+        )
+        model_record = self.cursor.fetchone()
+        
+        if model_record and model_record[0]:
+            try:
+                metrics = json.loads(model_record[0])
+                # Ensure numeric metrics are converted to float
+                self._convert_metrics_to_float(metrics)
+            except Exception as e:
+                print(f"Error parsing model metrics from database: {e}")
+                metrics = {}
+        
+        # If we don't have metrics in the database, try to find a metrics file (legacy support)
+        if not metrics:
+            metrics_path = self.base_dir / "models" / f"experiment_{experiment_id}" / f"{model_type}_metrics.json"
+            if metrics_path.exists():
+                try:
+                    with open(metrics_path, 'r') as f:
+                        metrics = json.load(f)
+                        # Ensure numeric metrics are converted to float
+                        self._convert_metrics_to_float(metrics)
+                except Exception as e:
+                    print(f"Error loading metrics from file: {e}")
+        
+        # Load the model if it exists
+        if model_path.exists():
+            try:
+                with open(model_path, 'rb') as f:
+                    model = pickle.load(f)
+                return model, metrics
+            except Exception as e:
+                print(f"Error loading model: {e}")
+                return None, None
+        else:
+            print(f"Model file not found: {model_path}")
+            return None, None
 
     def get_preprocessing_steps(self, experiment_id):
         """Get preprocessing steps for an experiment"""

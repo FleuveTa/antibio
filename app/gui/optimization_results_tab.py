@@ -142,23 +142,34 @@ class OptimizationResultsTab(QWidget):
         x_sorted = np.sort(x)
         x_fine = np.linspace(min(x), max(x), 100)  # For smoother curve
         
-        # Generate predictions
-        if model_result["type"] == "linear":
+        # Generate predictions based on model type
+        if model_result["type"] in ["linear", "polynomial2", "polynomial3", "symbolic"]:
             model = model_result["model"]
             y_pred = model.predict(x_fine.reshape(-1, 1))
         else:
+            # For gaussian, sigmoid models that use function and parameters
             model_func = model_result["model"]
-            y_pred = model_func(x_fine, *model_result["model_params"])
+            if "model_params" in model_result:
+                y_pred = model_func(x_fine, *model_result["model_params"])
+            else:
+                # Fallback to params if model_params doesn't exist
+                y_pred = model_func(x_fine, *[model_result["params"][p] for p in model_result["params"]])
         
         # Plot the model curve
         ax.plot(x_fine, y_pred, 'r-', label=f'{model_result["type"].capitalize()} Model')
         
         # Mark the optimal parameter value
         optimal_x = model_result["optimal_x"]
-        if model_result["type"] == "linear":
+        
+        # Calculate the corresponding y value for the optimal x
+        if model_result["type"] in ["linear", "polynomial2", "polynomial3", "symbolic"]:
             optimal_y = model_result["model"].predict(np.array([[optimal_x]]))[0]
         else:
-            optimal_y = model_result["model"](optimal_x, *model_result["model_params"])
+            if "model_params" in model_result:
+                optimal_y = model_result["model"](optimal_x, *model_result["model_params"])
+            else:
+                # Fallback to params if model_params doesn't exist
+                optimal_y = model_result["model"](optimal_x, *[model_result["params"][p] for p in model_result["params"]])
         
         ax.plot(optimal_x, optimal_y, 'go', markersize=10, label='Optimal Value')
         ax.axvline(x=optimal_x, color='g', linestyle='--', alpha=0.5)
@@ -216,6 +227,11 @@ class OptimizationResultsTab(QWidget):
         if model_result["type"] == "linear":
             report_text += f"**Slope:** {model_result['params']['slope']:.4f}\n"
             report_text += f"**Intercept:** {model_result['params']['intercept']:.4f}\n"
+        elif model_result["type"] == "polynomial2" or model_result["type"] == "polynomial3":
+            coefficients = model_result['params']['coefficients']
+            for i, coef in enumerate(coefficients):
+                report_text += f"**Coefficient {i}:** {coef:.6f}\n"
+            report_text += f"**Intercept:** {model_result['params']['intercept']:.6f}\n"
         elif model_result["type"] == "gaussian":
             report_text += f"**Amplitude (a):** {model_result['params']['a']:.4f}\n"
             report_text += f"**Mean (b):** {model_result['params']['b']:.4f}\n"
@@ -225,6 +241,9 @@ class OptimizationResultsTab(QWidget):
             report_text += f"**Steepness (b):** {model_result['params']['b']:.4f}\n"
             report_text += f"**Midpoint (c):** {model_result['params']['c']:.4f}\n"
             report_text += f"**Offset (d):** {model_result['params']['d']:.4f}\n"
+        elif model_result["type"] == "symbolic":
+            report_text += f"**Symbolic Expression:** {model_result['equation']}\n"
+            # Symbolic regression doesn't usually have explicit parameters to show
         
         # Add conclusion
         report_text += "\n## Conclusion\n\n"

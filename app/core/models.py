@@ -52,8 +52,14 @@ class AntibioticClassifier:
         """
         # Print data information for debugging
         print(f"Training classification model with {X.shape[0]} samples and {X.shape[1]} features")
-        print(f"Target classes: {np.unique(y)}")
-
+        
+        # Convert all elements to string to avoid mixed type comparison
+        try:
+            y_str = np.array([str(val) for val in y])
+            print(f"Target classes: {np.unique(y_str)}")
+        except Exception as e:
+            print(f"Error displaying target classes: {e}")
+        
         # For XGBoost, we need to encode string labels to integers
         if self.model_type == "xgb":
             print("XGBoost requires numeric class labels. Encoding string labels...")
@@ -127,10 +133,16 @@ class AntibioticClassifier:
                 y_test = y_test_original
         except Exception as e:
             print(f"Error getting prediction probabilities: {e}")
-            y_pred_proba = np.zeros((len(y_test), len(np.unique(y_test))))
-
-        # For binary classification, we only need the probability of the positive class
-        # For multiclass, we'll handle this differently
+            # Find number of classes safely, avoiding mixed type comparison
+            try:
+                # Convert y_test to string to get a safe count of unique values
+                y_test_str = np.array([str(val) for val in y_test])
+                num_classes = len(np.unique(y_test_str))
+                y_pred_proba = np.zeros((len(y_test), num_classes))
+            except Exception as e2:
+                print(f"Error creating dummy probabilities: {e2}")
+                # Fallback: just create a dummy binary array
+                y_pred_proba = np.zeros((len(y_test), 2))
 
         # Calculate simple metrics
         try:
@@ -140,28 +152,40 @@ class AntibioticClassifier:
 
             # Calculate additional metrics
             # For binary classification
-            if len(np.unique(y_test)) == 2:
-                # Precision, recall, f1
-                from sklearn.metrics import precision_score, recall_score, f1_score, roc_auc_score
-                metrics["precision"] = precision_score(y_test, y_pred, average='binary')
-                metrics["recall"] = recall_score(y_test, y_pred, average='binary')
-                metrics["f1"] = f1_score(y_test, y_pred, average='binary')
+            try:
+                # Convert y_test to string array to avoid mixed type comparisons
+                y_test_str = np.array([str(val) for val in y_test])
+                num_classes = len(np.unique(y_test_str))
+                
+                if num_classes == 2:
+                    # Precision, recall, f1
+                    from sklearn.metrics import precision_score, recall_score, f1_score, roc_auc_score
+                    metrics["precision"] = precision_score(y_test, y_pred, average='binary')
+                    metrics["recall"] = recall_score(y_test, y_pred, average='binary')
+                    metrics["f1"] = f1_score(y_test, y_pred, average='binary')
 
-                # ROC AUC - only for binary classification
-                try:
-                    # Get probability of positive class
-                    if y_pred_proba.ndim > 1 and y_pred_proba.shape[1] > 1:
-                        # For models that return probabilities for all classes
-                        pos_proba = y_pred_proba[:, 1]
-                    else:
-                        # For models that return probability of positive class directly
-                        pos_proba = y_pred_proba
+                    # ROC AUC - only for binary classification
+                    try:
+                        # Get probability of positive class
+                        if y_pred_proba.ndim > 1 and y_pred_proba.shape[1] > 1:
+                            # For models that return probabilities for all classes
+                            pos_proba = y_pred_proba[:, 1]
+                        else:
+                            # For models that return probability of positive class directly
+                            pos_proba = y_pred_proba
 
-                    metrics["roc_auc"] = roc_auc_score(y_test, pos_proba)
-                except Exception as e:
-                    print(f"Could not calculate ROC AUC: {e}")
-            else:
-                # For multiclass classification
+                        metrics["roc_auc"] = roc_auc_score(y_test, pos_proba)
+                    except Exception as e:
+                        print(f"Could not calculate ROC AUC: {e}")
+                else:
+                    # For multiclass classification
+                    from sklearn.metrics import precision_score, recall_score, f1_score
+                    metrics["precision"] = precision_score(y_test, y_pred, average='weighted')
+                    metrics["recall"] = recall_score(y_test, y_pred, average='weighted')
+                    metrics["f1"] = f1_score(y_test, y_pred, average='weighted')
+            except Exception as e:
+                print(f"Error determining number of classes: {e}")
+                # Default to multiclass metrics
                 from sklearn.metrics import precision_score, recall_score, f1_score
                 metrics["precision"] = precision_score(y_test, y_pred, average='weighted')
                 metrics["recall"] = recall_score(y_test, y_pred, average='weighted')

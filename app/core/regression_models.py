@@ -1,3 +1,6 @@
+import os
+import ctypes
+import glob
 import numpy as np
 from sklearn.linear_model import LinearRegression
 from sklearn.preprocessing import PolynomialFeatures
@@ -5,63 +8,33 @@ from sklearn.pipeline import Pipeline
 from sklearn.metrics import r2_score, mean_squared_error
 from scipy.optimize import curve_fit
 
-# Tạm thời vô hiệu hóa Symbolic Regression
-# import sympy
-# from pysr import PySRRegressor
+# Path to the bin directory of your Julia installation
+julia_bin_path = "D:\\Julia-1.11.5\\bin"
 
+# Add the bin directory to PATH
+os.environ["PATH"] += ";" + julia_bin_path
+
+# Load each DLL file in the bin directory
+for dll_path in glob.glob(os.path.join(julia_bin_path, "*.dll")):
+    try:
+        ctypes.CDLL(dll_path)
+        print(f"Loaded {dll_path} successfully.")
+    except OSError as e:
+        print(f"Could not load {dll_path}: {e}")
+
+# Now try to import PySR
+try:
+    from pysr import PySRRegressor
+    SYMBOLIC_AVAILABLE = True
+    print("PySR imported successfully.")
+except ImportError as e:
+    SYMBOLIC_AVAILABLE = False
+    print(f"Could not import PySR: {e}")
 
 class RegressionModels:
     """
     Class for fitting different regression models to parameter data
     """
-    @staticmethod
-    def linear_regression(x, y):
-        """
-        Fit linear regression model: y = mx + b
-
-        Args:
-            x: Independent variable (parameter values)
-            y: Dependent variable (peak current values)
-
-        Returns:
-            Dictionary with model, parameters, metrics, and predictions
-        """
-        model = LinearRegression()
-        x_reshaped = x.reshape(-1, 1)
-        model.fit(x_reshaped, y)
-
-        # Make predictions
-        y_pred = model.predict(x_reshaped)
-
-        # Calculate metrics
-        r2 = r2_score(y, y_pred)
-        mse = mean_squared_error(y, y_pred)
-
-        # Get model parameters
-        slope = model.coef_[0]
-        intercept = model.intercept_
-
-        # Find optimal parameter value (maximum y value)
-        if slope > 0:
-            # If slope is positive, maximum is at highest x
-            optimal_x = max(x)
-        elif slope < 0:
-            # If slope is negative, maximum is at lowest x
-            optimal_x = min(x)
-        else:
-            # If slope is zero, any x is optimal
-            optimal_x = np.mean(x)
-
-        return {
-            "model": model,
-            "type": "linear",
-            "equation": f"y = {slope:.4f}x + {intercept:.4f}",
-            "params": {"slope": slope, "intercept": intercept},
-            "metrics": {"r2": r2, "mse": mse},
-            "predictions": y_pred,
-            "optimal_x": optimal_x
-        }
-
     @staticmethod
     def gaussian_regression(x, y):
         """
@@ -82,7 +55,7 @@ class RegressionModels:
 
         try:
             # Fit the model
-            popt, pcov = curve_fit(gaussian, x, y, p0=p0)
+            popt, pcov = curve_fit(gaussian, x, y, p0=p0, maxfev=10000)
 
             # Make predictions
             y_pred = gaussian(x, *popt)
@@ -325,20 +298,53 @@ class RegressionModels:
     def symbolic_regression(x, y):
         """
         Fit symbolic regression model using PySR
-
-        Note: This method is temporarily disabled.
-        It will return None, indicating that the model could not be fitted.
-
         Args:
             x: Independent variable (parameter values)
             y: Dependent variable (peak current values)
-
         Returns:
-            None (temporarily disabled)
+            Dictionary với model, parameters, metrics, và predictions
         """
-        print("Symbolic Regression is temporarily disabled.")
-        print("Please use other regression models instead.")
-        return None
+        try:
+            model = PySRRegressor(
+                niterations=40,
+                binary_operators=["+", "-", "*", "/", "^"],
+                unary_operators=["exp", "log", "sqrt"],
+                model_selection="best",
+                maxsize=20,
+                verbosity=0
+            )
+            x_reshaped = x.reshape(-1, 1)
+            model.fit(x_reshaped, y)
+            y_pred = model.predict(x_reshaped)
+            r2 = r2_score(y, y_pred)
+            mse = mean_squared_error(y, y_pred)
+            
+            # Extract just the equation string from the best model
+            best_model = model.get_best()
+            if hasattr(best_model, 'sympy_format'):
+                equation = str(best_model.sympy_format)
+            else:
+                equation = str(best_model)
+            
+            # Tìm giá trị tối ưu (giá trị x cho y lớn nhất)
+            x_dense = np.linspace(min(x), max(x), 1000).reshape(-1, 1)
+            y_dense = model.predict(x_dense)
+            optimal_idx = np.argmax(y_dense)
+            optimal_x = x_dense[optimal_idx][0]
+            
+            return {
+                "model": model,
+                "type": "symbolic",
+                "equation": equation,
+                "params": {"symbolic_expression": equation},  # Add params for consistency
+                "model_params": [],  # Empty list for compatibility
+                "metrics": {"r2": r2, "mse": mse},
+                "predictions": y_pred,
+                "optimal_x": optimal_x
+            }
+        except Exception as e:
+            print(f"Error fitting Symbolic Regression model: {e}")
+            return None
 
     @staticmethod
     def find_best_model(x, y):
@@ -353,39 +359,55 @@ class RegressionModels:
             The best model based on R² score
         """
         models = []
-
-        # Fit linear model
-        linear_model = RegressionModels.linear_regression(x, y)
-        if linear_model:
-            models.append(linear_model)
+        errors = []
 
         # Fit polynomial models
-        poly2_model = RegressionModels.polynomial_regression_2(x, y)
-        if poly2_model:
-            models.append(poly2_model)
+        try:
+            poly2_model = RegressionModels.polynomial_regression_2(x, y)
+            if poly2_model:
+                models.append(poly2_model)
+        except Exception as e:
+            errors.append(f"Polynomial (degree 2) Regression failed: {str(e)}")
 
-        poly3_model = RegressionModels.polynomial_regression_3(x, y)
-        if poly3_model:
-            models.append(poly3_model)
+        try:
+            poly3_model = RegressionModels.polynomial_regression_3(x, y)
+            if poly3_model:
+                models.append(poly3_model)
+        except Exception as e:
+            errors.append(f"Polynomial (degree 3) Regression failed: {str(e)}")
 
         # Fit Gaussian model
-        gaussian_model = RegressionModels.gaussian_regression(x, y)
-        if gaussian_model:
-            models.append(gaussian_model)
+        try:
+            gaussian_model = RegressionModels.gaussian_regression(x, y)
+            if gaussian_model:
+                models.append(gaussian_model)
+        except Exception as e:
+            errors.append(f"Gaussian Regression failed: {str(e)}")
 
         # Fit Sigmoid model
-        sigmoid_model = RegressionModels.sigmoid_regression(x, y)
-        if sigmoid_model:
-            models.append(sigmoid_model)
+        try:
+            sigmoid_model = RegressionModels.sigmoid_regression(x, y)
+            if sigmoid_model:
+                models.append(sigmoid_model)
+        except Exception as e:
+            errors.append(f"Sigmoid Regression failed: {str(e)}")
 
-        # Symbolic Regression is temporarily disabled
-        # symbolic_model = RegressionModels.symbolic_regression(x, y)
-        # if symbolic_model:
-        #     models.append(symbolic_model)
+        # Fit Symbolic model
+        try:
+            symbolic_model = RegressionModels.symbolic_regression(x, y)
+            if symbolic_model:
+                models.append(symbolic_model)
+        except Exception as e:
+            errors.append(f"Symbolic Regression failed: {str(e)}")
 
         # Find the best model based on R² score
         if models:
             best_model = max(models, key=lambda m: m["metrics"]["r2"])
+            print(f"Best model found: {best_model['type']} with R² = {best_model['metrics']['r2']:.4f}")
             return best_model
-
+        # If no models were successful, print all errors
+        print("\nAll regression models failed:")
+        for error in errors:
+            print(f"- {error}")
         return None
+
